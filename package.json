@@ -1,0 +1,24 @@
+{
+    "name": "socketio-cli-chat",
+    "version": "1.0.0",
+    "description": "CLI-based Socket.IO chat server and client with room support",
+    "main": "server.js",
+    "scripts": {
+      "server": "node server.js",
+      "client": "node client.js"
+    },
+    "keywords": [
+      "socketio",
+      "websocket",
+      "cli",
+      "chat",
+      "rooms"
+    ],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+      "express": "^4.18.2",
+      "socket.io": "^4.6.1",
+      "socket.io-client": "^4.6.1"
+    }
+  }
