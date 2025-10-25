@@ -1,19 +1,120 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const { createClient } = require('redis');
+const { createAdapter } = require('@socket.io/redis-streams-adapter');
 const readline = require('readline');
 
 // Create Express app
 const app = express();
 const server = http.createServer(app);
 
+// Redis configuration from environment variables
+const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
+const REDIS_PORT = process.env.REDIS_PORT || 6379;
+const SERVER_ID = process.env.SERVER_ID || `server-${Math.random().toString(36).substring(7)}`;
+
 // Initialize Socket.IO
 const io = new Server(server, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"]
+  },
+  // Enable connection state recovery
+  connectionStateRecovery: {
+    maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
+    skipMiddlewares: true
   }
 });
+
+// Initialize Redis client for adapter
+let redisClient;
+let subscriberClient;
+
+// Set up external message listener for redis-publisher
+async function setupExternalMessageListener() {
+  try {
+    // Create a separate subscriber client
+    subscriberClient = redisClient.duplicate();
+    await subscriberClient.connect();
+
+    // Subscribe to external messages channel
+    await subscriberClient.subscribe('external-to-socketio', (message) => {
+      try {
+        const data = JSON.parse(message);
+        const { type, roomId, message: msg, from, timestamp } = data;
+
+        if (type === 'room-message' && roomId) {
+          // Emit to specific room
+          io.to(roomId).emit('room-message', {
+            roomId,
+            from: from || 'EXTERNAL',
+            message: msg,
+            timestamp: timestamp || new Date().toISOString()
+          });
+          console.log(`\n[EXTERNAL] Message sent to room "${roomId}": ${msg}`);
+          if (rl) rl.prompt();
+        } else if (type === 'broadcast') {
+          // Broadcast to all clients
+          io.emit('server-broadcast', {
+            message: msg,
+            timestamp: timestamp || new Date().toISOString()
+          });
+          console.log(`\n[EXTERNAL] Broadcast: ${msg}`);
+          if (rl) rl.prompt();
+        }
+      } catch (error) {
+        console.error('[EXTERNAL] Error processing message:', error.message);
+      }
+    });
+
+    console.log('[REDIS] External message listener initialized');
+  } catch (error) {
+    console.error('[REDIS] Failed to set up external message listener:', error.message);
+  }
+}
+
+async function initializeRedis() {
+  try {
+    redisClient = createClient({
+      socket: {
+        host: REDIS_HOST,
+        port: REDIS_PORT
+      }
+    });
+
+    redisClient.on('error', (err) => {
+      console.error('\n[REDIS ERROR]', err);
+    });
+
+    redisClient.on('connect', () => {
+      console.log(`\n[REDIS] Connected to Redis at ${REDIS_HOST}:${REDIS_PORT}`);
+    });
+
+    redisClient.on('ready', () => {
+      console.log('[REDIS] Redis client is ready');
+    });
+
+    redisClient.on('reconnecting', () => {
+      console.log('[REDIS] Reconnecting to Redis...');
+    });
+
+    await redisClient.connect();
+
+    // Set up Redis Streams adapter
+    io.adapter(createAdapter(redisClient));
+    console.log(`[REDIS] Redis Streams adapter initialized for ${SERVER_ID}`);
+
+    // Set up subscriber for external messages (from redis-publisher)
+    await setupExternalMessageListener();
+
+    return true;
+  } catch (error) {
+    console.error('\n[REDIS] Failed to connect to Redis:', error.message);
+    console.log('[REDIS] Running in standalone mode without Redis');
+    return false;
+  }
+}
 
 // Store active rooms and clients
 const rooms = new Map();
@@ -30,7 +131,15 @@ let serverRunning = false;
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log(`\n[CONNECT] Client connected: ${socket.id}`);
+  // Check if this is a recovered connection
+  const recovered = socket.recovered;
+
+  if (recovered) {
+    console.log(`\n[RECOVERY] Client reconnected (recovered): ${socket.id}`);
+  } else {
+    console.log(`\n[CONNECT] Client connected: ${socket.id}`);
+  }
+
   clients.set(socket.id, { socket, rooms: new Set() });
   rl.prompt();
 
@@ -221,12 +330,7 @@ function sendToRoom(roomId, message) {
     console.log('Server is not running!');
     return;
   }
-  
-  if (!rooms.has(roomId)) {
-    console.log(`Error: Room "${roomId}" does not exist or is empty`);
-    return;
-  }
-  
+
   const timestamp = new Date().toISOString();
   io.to(roomId).emit('room-message', {
     roomId,
@@ -234,8 +338,14 @@ function sendToRoom(roomId, message) {
     message,
     timestamp
   });
-  
-  console.log(`\n[SENT TO ROOM] Room: ${roomId} | Message: ${message}\n`);
+
+  // Show warning if room is empty, but still send the message
+  const memberCount = rooms.has(roomId) ? rooms.get(roomId).size : 0;
+  if (memberCount === 0) {
+    console.log(`\n[SENT TO ROOM] Room: ${roomId} | Message: ${message} | Warning: Room is empty (0 members)\n`);
+  } else {
+    console.log(`\n[SENT TO ROOM] Room: ${roomId} | Message: ${message} | Members: ${memberCount}\n`);
+  }
 }
 
 // Handle CLI input
@@ -252,11 +362,18 @@ rl.on('line', (line) => {
       if (serverRunning) {
         console.log('Server is already running!');
       } else {
-        server.listen(3000, () => {
-          serverRunning = true;
-          console.log('\n✓ Socket.IO server started on http://localhost:3000');
-          console.log('Type "help" for available commands\n');
-        });
+        (async () => {
+          // Initialize Redis before starting server
+          await initializeRedis();
+
+          server.listen(3000, () => {
+            serverRunning = true;
+            console.log(`\n✓ Socket.IO server started on http://localhost:3000`);
+            console.log(`✓ Server ID: ${SERVER_ID}`);
+            console.log('Type "help" for available commands\n');
+            rl.prompt();
+          });
+        })();
       }
       break;
       
@@ -264,8 +381,15 @@ rl.on('line', (line) => {
       if (!serverRunning) {
         console.log('Server is not running!');
       } else {
-        server.close(() => {
+        server.close(async () => {
           serverRunning = false;
+          if (subscriberClient) {
+            await subscriberClient.quit();
+          }
+          if (redisClient) {
+            await redisClient.quit();
+            console.log('[REDIS] Disconnected from Redis');
+          }
           console.log('\n✓ Server stopped\n');
           rl.prompt();
         });
@@ -313,11 +437,26 @@ rl.on('line', (line) => {
     case 'exit':
       console.log('Shutting down server...');
       if (serverRunning) {
-        server.close(() => {
+        server.close(async () => {
+          if (subscriberClient) {
+            await subscriberClient.quit();
+          }
+          if (redisClient) {
+            await redisClient.quit();
+            console.log('[REDIS] Disconnected from Redis');
+          }
           process.exit(0);
         });
       } else {
-        process.exit(0);
+        (async () => {
+          if (subscriberClient) {
+            await subscriberClient.quit();
+          }
+          if (redisClient) {
+            await redisClient.quit();
+          }
+          process.exit(0);
+        })();
       }
       return;
       
@@ -344,10 +483,25 @@ rl.prompt();
 rl.on('SIGINT', () => {
   console.log('\n\nReceived SIGINT. Shutting down gracefully...');
   if (serverRunning) {
-    server.close(() => {
+    server.close(async () => {
+      if (subscriberClient) {
+        await subscriberClient.quit();
+      }
+      if (redisClient) {
+        await redisClient.quit();
+        console.log('[REDIS] Disconnected from Redis');
+      }
       process.exit(0);
     });
   } else {
-    process.exit(0);
+    (async () => {
+      if (subscriberClient) {
+        await subscriberClient.quit();
+      }
+      if (redisClient) {
+        await redisClient.quit();
+      }
+      process.exit(0);
+    })();
   }
 });

@@ -23,4 +23,5 @@ connect
 
 ```sh
 docker build -t websocket-server .
+docker run -p 3000:3000 -it websocket-server
 ```
