@@ -18,6 +18,8 @@ EXPOSE 3000
 
 # Set environment variable for production
 ENV NODE_ENV=production
+ENV REDIS_HOST=host.docker.internal
+ENV REDIS_PORT=6379
 
 # Start the server
-CMD ["npm", "run", "server"]
+CMD ["npm", "run", "server:auto"]

@@ -348,6 +348,10 @@ function sendToRoom(roomId, message) {
   }
 }
 
+// Parse command line arguments
+const args = process.argv.slice(2);
+const autoStart = args.includes('--auto-start');
+
 // Handle CLI input
 rl.on('line', (line) => {
   const input = line.trim();
@@ -475,9 +479,26 @@ rl.on('line', (line) => {
 console.log('\n╔════════════════════════════════════╗');
 console.log('║   Socket.IO CLI Server             ║');
 console.log('╚════════════════════════════════════╝');
-console.log('\nType "start" to start the server');
-console.log('Type "help" for available commands\n');
-rl.prompt();
+
+// Auto-start if flag is provided
+if (autoStart) {
+  console.log('\n[AUTO-START] Starting server automatically...\n');
+  (async () => {
+    await initializeRedis();
+
+    server.listen(3000, () => {
+      serverRunning = true;
+      console.log(`\n✓ Socket.IO server started on http://localhost:3000`);
+      console.log(`✓ Server ID: ${SERVER_ID}`);
+      console.log('Type "help" for available commands\n');
+      rl.prompt();
+    });
+  })();
+} else {
+  console.log('\nType "start" to start the server');
+  console.log('Type "help" for available commands\n');
+  rl.prompt();
+}
 
 // Handle Ctrl+C
 rl.on('SIGINT', () => {

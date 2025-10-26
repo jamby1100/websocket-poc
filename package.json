@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "server": "node server.js",
+    "server:auto": "node server.js --auto-start",
     "client": "node client.js",
     "publisher": "node redis-publisher.js"
   },
