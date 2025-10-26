@@ -52,3 +52,26 @@ docker run -p 3600:3600 -it \
 docker exec -it socketio-redis redis-cli
 
 ```
+
+## ECS
+
+```sh
+
+aws ecr create-repository \
+    --repository-name poc/websocket-server \
+    --encryption-configuration encryptionType=AES256 \
+    --image-tag-mutability MUTABLE \
+    --profile personal \
+    --region ap-southeast-1
+
+aws ecr get-login-password --region ap-southeast-1 --profile personal | docker login --username AWS --password-stdin $(aws sts get-caller-identity --profile personal --query Account --output text).dkr.ecr.ap-southeast-1.amazonaws.com
+
+docker build -t websocket-server .
+
+docker tag websocket-server:latest $(aws sts get-caller-identity --profile personal --query Account --output text).dkr.ecr.ap-southeast-1.amazonaws.com/poc/websocket-server:latest
+
+docker push $(aws sts get-caller-identity --profile personal --query Account --output text).dkr.ecr.ap-southeast-1.amazonaws.com/poc/websocket-server:latest
+
+
+```
+

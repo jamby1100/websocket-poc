@@ -19,7 +19,9 @@ async function initializeRedis() {
     redisClient = createClient({
       socket: {
         host: REDIS_HOST,
-        port: REDIS_PORT
+        port: REDIS_PORT,
+        tls: process.env.REDIS_TLS === 'true' ? true : false,
+        rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
       }
     });
 

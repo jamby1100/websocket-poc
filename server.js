@@ -79,16 +79,19 @@ async function initializeRedis() {
     redisClient = createClient({
       socket: {
         host: REDIS_HOST,
-        port: REDIS_PORT
+        port: REDIS_PORT,
+        tls: process.env.REDIS_TLS === 'true' ? true : false,
+        rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
       }
     });
 
     redisClient.on('error', (err) => {
       console.error('\n[REDIS ERROR]', err);
+      console.log(`\n[REDIS] Error Connecting to Redis at ${REDIS_HOST}:${REDIS_PORT} TLS: ${process.REDIS_TLS}`);
     });
 
     redisClient.on('connect', () => {
-      console.log(`\n[REDIS] Connected to Redis at ${REDIS_HOST}:${REDIS_PORT}`);
+      console.log(`\n[REDIS] Connected to Redis at ${REDIS_HOST}:${REDIS_PORT} TLS: ${process.REDIS_TLS}`);
     });
 
     redisClient.on('ready', () => {
@@ -97,6 +100,7 @@ async function initializeRedis() {
 
     redisClient.on('reconnecting', () => {
       console.log('[REDIS] Reconnecting to Redis...');
+      console.log(`\n[REDIS] Reconnecting to Redis at ${REDIS_HOST}:${REDIS_PORT} TLS: ${process.REDIS_TLS}`);
     });
 
     await redisClient.connect();
