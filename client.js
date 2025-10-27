@@ -1,6 +1,11 @@
 const io = require('socket.io-client');
 const readline = require('readline');
 
+// Server configuration
+const SERVER_HOST = process.env.WEBSOCKET_SERVER || 'localhost';
+const SERVER_PORT = process.env.WEBSOCKET_PORT || '3000';
+const SERVER_URL = `http://${SERVER_HOST}:${SERVER_PORT}`;
+
 // Client state
 let socket = null;
 let connected = false;
@@ -93,13 +98,13 @@ function connectToServer() {
     return;
   }
 
-  console.log('Connecting to server at http://localhost:3000...');
-  socket = io('http://localhost:3000', {
+  console.log(`Connecting to server at ${SERVER_URL}...`);
+  socket = io(SERVER_URL, {
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionAttempts: 5
   });
-  
+
   setupSocketListeners();
 }
 
@@ -182,7 +187,7 @@ function showStatus() {
   console.log(`Connected: ${connected}`);
   console.log(`Socket ID: ${mySocketId || 'N/A'}`);
   console.log(`Current Room: ${currentRoom || 'None'}`);
-  console.log(`Server URL: http://localhost:3000`);
+  console.log(`Server URL: ${SERVER_URL}`);
   console.log('=====================\n');
 }
 
