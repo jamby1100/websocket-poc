@@ -7,7 +7,9 @@
     "server": "node server.js",
     "server:auto": "node server.js --auto-start",
     "client": "node client.js",
-    "publisher": "node redis-publisher.js"
+    "publisher": "node redis-publisher.js",
+    "rider": "node rider-client.js",
+    "driver": "node driver-client.js"
   },
   "keywords": [
     "socketio",
@@ -24,6 +26,7 @@
     "socket.io-client": "^4.6.1",
     "@socket.io/redis-adapter": "^8.2.1",
     "@socket.io/redis-streams-adapter": "^0.2.2",
-    "redis": "^4.6.7"
+    "redis": "^4.6.7",
+    "axios": "^1.6.0"
   }
 }

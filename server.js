@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const { createClient } = require('redis');
 const { createAdapter } = require('@socket.io/redis-streams-adapter');
 const readline = require('readline');
+const axios = require('axios');
 
 // Create Express app
 const app = express();
@@ -124,6 +125,30 @@ async function initializeRedis() {
 const rooms = new Map();
 const clients = new Map();
 
+// Store online drivers and riders by their names
+const onlineDrivers = new Map(); // "John Doe" → socketId
+const onlineRiders = new Map();  // "Jane Smith" → socketId
+const userSockets = new Map();   // socketId → { type: 'driver'/'rider', userData: {...}, location: {...} }
+const tripToRider = new Map();   // tripId → riderSocketId
+
+// Action router for external API calls
+const API_BASE_URL = process.env.API_BASE_URL || 'http://joyride-rewrite-alb-1006628052.ap-southeast-2.elb.amazonaws.com';
+
+const actionRouter = {
+  'create_trip': {
+    method: 'POST',
+    endpoint: '/trips'
+  },
+  'cancel_trip': {
+    method: 'DELETE',
+    endpoint: '/trips'
+  },
+  'complete_trip': {
+    method: 'PUT',
+    endpoint: '/trips'
+  }
+};
+
 // Create readline interface for server CLI
 const rl = readline.createInterface({
   input: process.stdin,
@@ -146,6 +171,167 @@ io.on('connection', (socket) => {
 
   clients.set(socket.id, { socket, rooms: new Set() });
   rl.prompt();
+
+  // Handle assume identity (driver or rider)
+  socket.on('assume-identity', ({ userType, userData, location }) => {
+    const fullName = `${userData.firstName} ${userData.lastName}`;
+
+    if (userType === 'driver') {
+      onlineDrivers.set(fullName, socket.id);
+      userSockets.set(socket.id, {
+        type: 'driver',
+        userData,
+        location: location || null
+      });
+      console.log(`\n[DRIVER ONLINE] ${fullName} (${socket.id})`);
+    } else if (userType === 'rider') {
+      onlineRiders.set(fullName, socket.id);
+      userSockets.set(socket.id, {
+        type: 'rider',
+        userData,
+        location: location || null
+      });
+      console.log(`\n[RIDER ONLINE] ${fullName} (${socket.id})`);
+    }
+
+    rl.prompt();
+  });
+
+  // Handle location update
+  socket.on('update-location', ({ location }) => {
+    if (userSockets.has(socket.id)) {
+      const userData = userSockets.get(socket.id);
+      userData.location = location;
+      userSockets.set(socket.id, userData);
+      console.log(`\n[LOCATION UPDATE] ${socket.id} location updated`);
+      rl.prompt();
+    }
+  });
+
+  // Handle trip request from rider
+  socket.on('trip-request', async (payload) => {
+    console.log(`\n[TRIP REQUEST] Received from ${socket.id}`);
+    console.log(`[TRIP REQUEST] Action: ${payload.action}`);
+
+    const action = actionRouter[payload.action];
+
+    if (!action) {
+      console.log(`[ERROR] Unknown action: ${payload.action}`);
+      socket.emit('trip-error', { message: 'Unknown action' });
+      rl.prompt();
+      return;
+    }
+
+    try {
+      // Call external API
+      const apiUrl = `${API_BASE_URL}${action.endpoint}`;
+      console.log(`[API CALL] ${action.method} ${apiUrl}`);
+      const response = await axios({
+        method: action.method,
+        url: apiUrl,
+        data: payload.data,
+        headers: payload.header || {},
+        timeout: 30000
+      });
+      
+      console.log('[DATA]', JSON.stringify(payload.data, null, 2))
+      console.log(`[API RESPONSE] Status: ${response.status}`);
+
+      if (response.data && response.data.data) {
+        const tripData = response.data.data;
+
+        // Store mapping of tripId to rider socketId
+        tripToRider.set(tripData.sk, socket.id);
+
+        // Extract driver info from API response
+        const driverFirstName = tripData.driver.firstName;
+        const driverLastName = tripData.driver.lastName;
+        const driverFullName = `${driverFirstName} ${driverLastName}`;
+
+        console.log(`[DRIVER ASSIGNMENT] Driver assigned: ${driverFullName}`);
+
+        // Send trip details back to rider (with fare, without driver details yet)
+        socket.emit('trip-created', {
+          tripId: tripData.sk,
+          rider: tripData.rider,
+          fare: tripData.fare,
+          metrics: tripData.metrics,
+          driver: tripData.driver
+        });
+
+        // Look up driver socket by name
+        const driverSocketId = onlineDrivers.get(driverFullName);
+
+        if (driverSocketId) {
+          console.log(`[DRIVER NOTIFICATION] Notifying driver ${driverFullName} (${driverSocketId})`);
+
+          // Send trip request to the assigned driver
+          io.to(driverSocketId).emit('trip-request-notification', {
+            tripId: tripData.sk,
+            rider: tripData.rider,
+            fare: tripData.fare,
+            driver: tripData.driver
+          });
+        } else {
+          console.log(`[ERROR] Driver ${driverFullName} is not online or not found`);
+          console.log(`[ERROR] Available drivers: ${Array.from(onlineDrivers.keys()).join(', ')}`);
+        }
+      } else {
+        console.log(`[ERROR] Invalid API response format`);
+        socket.emit('trip-error', { message: 'Invalid API response' });
+      }
+
+    } catch (error) {
+      console.log(`\n[ERROR] API call failed: ${error.message}`);
+      if (error.response) {
+        console.log(`[ERROR] Status: ${error.response.status}`);
+        console.log(`[ERROR] Data:`, error.response.data);
+      }
+
+      socket.emit('trip-error', {
+        message: `Booking failed: ${error.message}`
+      });
+    }
+
+    rl.prompt();
+  });
+
+  // Handle driver response (accept/reject)
+  socket.on('driver-response', ({ tripId, driverName, accepted }) => {
+    console.log(`\n[DRIVER RESPONSE] Trip ${tripId} | Driver: ${driverName} | Accepted: ${accepted}`);
+
+    // Get the rider who made this trip request
+    const riderSocketId = tripToRider.get(tripId);
+
+    if (!riderSocketId) {
+      console.log(`[ERROR] No rider found for trip ${tripId}`);
+      rl.prompt();
+      return;
+    }
+
+    if (accepted) {
+      // Notify the specific rider about acceptance
+      io.to(riderSocketId).emit('driver-accepted', {
+        tripId,
+        driverName
+      });
+      console.log(`[NOTIFICATION] Rider ${riderSocketId} notified of acceptance`);
+
+      // Clean up the mapping after acceptance
+      tripToRider.delete(tripId);
+    } else {
+      // Notify the specific rider about rejection
+      io.to(riderSocketId).emit('driver-rejected', {
+        tripId,
+        driverName
+      });
+      console.log(`[NOTIFICATION] Rider ${riderSocketId} notified of rejection`);
+
+      // Keep the mapping in case another driver is assigned
+    }
+
+    rl.prompt();
+  });
 
   // Handle room join
   socket.on('join-room', (roomId) => {
@@ -225,7 +411,23 @@ io.on('connection', (socket) => {
   // Handle disconnection
   socket.on('disconnect', () => {
     console.log(`\n[DISCONNECT] Client disconnected: ${socket.id}`);
-    
+
+    // Clean up driver/rider tracking
+    if (userSockets.has(socket.id)) {
+      const user = userSockets.get(socket.id);
+      const fullName = `${user.userData.firstName} ${user.userData.lastName}`;
+
+      if (user.type === 'driver') {
+        onlineDrivers.delete(fullName);
+        console.log(`[DRIVER OFFLINE] ${fullName}`);
+      } else if (user.type === 'rider') {
+        onlineRiders.delete(fullName);
+        console.log(`[RIDER OFFLINE] ${fullName}`);
+      }
+
+      userSockets.delete(socket.id);
+    }
+
     // Clean up room memberships
     if (clients.has(socket.id)) {
       const clientRooms = clients.get(socket.id).rooms;
