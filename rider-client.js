@@ -1,6 +1,9 @@
 const io = require('socket.io-client');
 const readline = require('readline');
 const { getRiders, getDrivers, getLocations, getRiderByName, getLocationByName } = require('./mock-data');
+const { success, error, warning, info, bold, dim, green, red, yellow, cyan, gray,
+        doubleBoxTitle, doubleBoxLine, doubleBoxSeparator, doubleBoxBottom,
+        boxTitle, boxLine, boxBottom, emoji } = require('./colors');
 
 // Server configuration
 const SERVER_HOST = process.env.WEBSOCKET_SERVER || 'localhost';
@@ -23,12 +26,13 @@ const rl = readline.createInterface({
   prompt: 'RIDER> '
 });
 
+
 // Socket event handlers
 function setupSocketListeners() {
   socket.on('connect', () => {
     connected = true;
     mySocketId = socket.id;
-    console.log(`\n✓ Connected to server! Your ID: ${socket.id}\n`);
+    console.log('\n' + success(`Connected to server! Your ID: ${socket.id}`) + '\n');
 
     // If already assumed identity, re-register
     if (currentRider) {
@@ -43,61 +47,120 @@ function setupSocketListeners() {
 
   socket.on('disconnect', () => {
     connected = false;
-    console.log('\n✗ Disconnected from server\n');
     stopLookingForDrivers();
+
+    // Clear session state
+    const hadIdentity = currentRider !== null;
+    const hadLocation = currentLocation !== null;
+    currentRider = null;
+    currentLocation = null;
+
+    console.log('\n' + error('Disconnected from server'));
+    if (hadIdentity || hadLocation) {
+      console.log(warning('Session cleared:'));
+      if (hadIdentity) console.log(dim('  • Identity reset'));
+      if (hadLocation) console.log(dim('  • Location reset'));
+    }
+    console.log('');
+
     rl.prompt();
   });
 
   socket.on('trip-created', (data) => {
     stopLookingForDrivers();
 
-    console.log('\n╔════════════════════════════════════════════════════════════╗');
-    console.log('║              ✓ TRIP REQUEST SENT!                         ║');
-    console.log('╚════════════════════════════════════════════════════════════╝\n');
+    const width = 80;
 
-    console.log(`Trip ID: ${data.tripId}`);
+    console.log('\n');
+    console.log(doubleBoxTitle(`${emoji.checkmark} TRIP REQUEST SENT!`, width));
+    console.log(doubleBoxLine('', width));
 
-    console.log(`\n─── TRIP DETAILS ───`);
-    console.log(`Pickup: ${data.rider.location.source.title}`);
-    console.log(`       ${data.rider.location.source.fullAddress}`);
+    // Trip ID
+    console.log(doubleBoxLine(`${emoji.id} Trip ID: ${dim(data.tripId)}`, width));
+    console.log(doubleBoxLine('', width));
 
-    console.log(`\nDestination: ${data.rider.location.destination.title}`);
-    console.log(`            ${data.rider.location.destination.fullAddress}`);
+    // Pickup
+    console.log(doubleBoxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
+    console.log(doubleBoxLine(`   ${cyan(data.rider.location.source.title)}`, width));
+    console.log(doubleBoxLine(`   ${dim(data.rider.location.source.fullAddress)}`, width));
+    console.log(doubleBoxLine('', width));
 
-    console.log(`\n─── FARE ───`);
-    console.log(`TOTAL: ₱${data.fare.total.toFixed(2)}`);
+    // Destination
+    console.log(doubleBoxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
+    console.log(doubleBoxLine(`   ${cyan(data.rider.location.destination.title)}`, width));
+    console.log(doubleBoxLine(`   ${dim(data.rider.location.destination.fullAddress)}`, width));
+    console.log(doubleBoxLine('', width));
 
-    console.log('\n⏳ Waiting for driver to accept...\n');
+    // Fare
+    console.log(doubleBoxLine(bold(yellow(`${emoji.money} FARE`)), width));
+    console.log(doubleBoxLine(`   Total: ${green(bold(`₱${data.fare.total.toFixed(2)}`))}`, width));
+    console.log(doubleBoxLine('', width));
+
+    console.log(doubleBoxBottom(width));
+    console.log('');
+
+    // Start continuous "Looking for drivers..." animation
+    startLookingForDrivers();
 
     pendingTripId = data.tripId;
-    rl.prompt();
   });
 
   socket.on('trip-error', (data) => {
     stopLookingForDrivers();
-    console.log('\n╔════════════════════════════════════════════════════════════╗');
-    console.log('║              ✗ BOOKING CANCELLED                           ║');
-    console.log('╚════════════════════════════════════════════════════════════╝\n');
-    console.log(`Error: ${data.message}\n`);
+
+    const width = 80;
+
+    console.log('\n');
+    console.log(doubleBoxTitle(`${emoji.cross} BOOKING CANCELLED`, width));
+    console.log(doubleBoxLine('', width));
+    console.log(doubleBoxLine(error(`Error: ${data.message}`), width));
+    console.log(doubleBoxLine('', width));
+    console.log(doubleBoxBottom(width));
+    console.log('');
+
     pendingTripId = null;
     rl.prompt();
   });
 
   socket.on('driver-accepted', (data) => {
-    console.log('\n╔════════════════════════════════════════════════════════════╗');
-    console.log('║              ✓ DRIVER ACCEPTED YOUR TRIP!                 ║');
-    console.log('╚════════════════════════════════════════════════════════════╝\n');
-    console.log(`🚗 Driver: ${data.driverName}`);
-    console.log(`Trip ID: ${data.tripId}\n`);
+    stopLookingForDrivers();
+
+    const width = 80;
+
+    console.log('\n');
+    console.log(doubleBoxTitle(`${emoji.checkmark} DRIVER ACCEPTED YOUR TRIP!`, width));
+    console.log(doubleBoxLine('', width));
+    console.log(doubleBoxLine(`${emoji.driver} Driver: ${green(bold(data.driverName))}`, width));
+    console.log(doubleBoxLine(`${emoji.id} Trip ID: ${dim(data.tripId)}`, width));
+    console.log(doubleBoxLine('', width));
+    console.log(doubleBoxLine(success('Your ride is confirmed! Get ready.'), width));
+    console.log(doubleBoxLine('', width));
+    console.log(doubleBoxBottom(width));
+    console.log('');
+
     pendingTripId = null;
     rl.prompt();
   });
 
   socket.on('driver-rejected', (data) => {
-    console.log(`\n✗ Driver ${data.driverName} declined your trip.`);
-    console.log(`Trip ID: ${data.tripId}`);
-    console.log(`🔄 The system should assign another driver...\n`);
-    rl.prompt();
+    // Don't stop animation - keep looking for another driver
+    const width = 80;
+
+    console.log('\n');
+    console.log(doubleBoxTitle(`${emoji.cross} DRIVER DECLINED`, width));
+    console.log(doubleBoxLine('', width));
+    console.log(doubleBoxLine(`${emoji.driver} Driver: ${red(data.driverName)}`, width));
+    console.log(doubleBoxLine(`${emoji.id} Trip ID: ${dim(data.tripId)}`, width));
+    console.log(doubleBoxLine('', width));
+    console.log(doubleBoxLine(warning('Looking for another driver...'), width));
+    console.log(doubleBoxLine('', width));
+    console.log(doubleBoxBottom(width));
+    console.log('');
+
+    // Continue looking for drivers animation
+    if (!lookingForDriversInterval) {
+      startLookingForDrivers();
+    }
   });
 
   socket.on('connect_error', (error) => {
@@ -127,67 +190,98 @@ function stopLookingForDrivers() {
 
 // CLI commands
 function showHelp() {
-  console.log('\n╔════════════════════════════════════════════════════════════╗');
-  console.log('║                    RIDER CLIENT COMMANDS                   ║');
-  console.log('╚════════════════════════════════════════════════════════════╝');
-  console.log('  help                              - Show this help menu');
-  console.log('  connect                           - Connect to the server');
-  console.log('  disconnect                        - Disconnect from server');
-  console.log('  display_riders                    - Show all available riders');
-  console.log('  display_drivers                   - Show all available drivers');
-  console.log('  display_locations                 - Show all available locations');
-  console.log('  assume_rider "{name}"             - Assume rider identity');
-  console.log('  assume_location "{location}"      - Set current location');
-  console.log('  book_trip "{source}" "{dest}"     - Book a trip');
-  console.log('  status                            - Show current status');
-  console.log('  exit                              - Exit the client');
-  console.log('════════════════════════════════════════════════════════════════\n');
+  const width = 62;
+  console.log('\n' + boxTitle('RIDER CLIENT COMMANDS', width));
+  console.log(boxLine('', width));
+  console.log(boxLine(bold('Connection:'), width));
+  console.log(boxLine(`  ${cyan('connect')}               ${dim('- Connect to the server')}`, width));
+  console.log(boxLine(`  ${cyan('disconnect')}            ${dim('- Disconnect from server')}`, width));
+  console.log(boxLine('', width));
+  console.log(boxLine(bold('Display Info:'), width));
+  console.log(boxLine(`  ${cyan('display_riders')}        ${dim('- Show all available riders')}`, width));
+  console.log(boxLine(`  ${cyan('display_drivers')}       ${dim('- Show all available drivers')}`, width));
+  console.log(boxLine(`  ${cyan('display_locations')}     ${dim('- Show all available locations')}`, width));
+  console.log(boxLine('', width));
+  console.log(boxLine(bold('Identity & Location:'), width));
+  console.log(boxLine(`  ${cyan('assume_rider "name"')}   ${dim('- Assume rider identity')}`, width));
+  console.log(boxLine(`  ${cyan('assume_location "loc"')} ${dim('- Set current location')}`, width));
+  console.log(boxLine('', width));
+  console.log(boxLine(bold('Trip:'), width));
+  console.log(boxLine(`  ${cyan('book_trip "from" "to"')} ${dim('- Book a trip')}`, width));
+  console.log(boxLine('', width));
+  console.log(boxLine(bold('Other:'), width));
+  console.log(boxLine(`  ${cyan('status')}                ${dim('- Show current status')}`, width));
+  console.log(boxLine(`  ${cyan('help')}                  ${dim('- Show this help menu')}`, width));
+  console.log(boxLine(`  ${cyan('exit')}                  ${dim('- Exit the client')}`, width));
+  console.log(boxLine('', width));
+  console.log(boxBottom(width) + '\n');
 }
 
 function displayRiders() {
   const riders = getRiders();
-  console.log('\n╔════════════════════════════════════════════════════════════╗');
-  console.log('║                    AVAILABLE RIDERS                        ║');
-  console.log('╚════════════════════════════════════════════════════════════╝');
-  riders.forEach(rider => {
-    console.log(`  ${rider.name}`);
-    console.log(`    User ID: ${rider.userId}`);
-    console.log(`    First Name: ${rider.firstName}`);
-    console.log(`    Last Name: ${rider.lastName}`);
-    console.log('');
+  const width = 62;
+
+  console.log('\n' + boxTitle(`AVAILABLE RIDERS ${emoji.rider}`, width));
+  console.log(boxLine('', width));
+
+  riders.forEach((rider, index) => {
+    const num = yellow(`[${index + 1}]`);
+    const name = bold(cyan(rider.name));
+    console.log(boxLine(`${num} ${name}`, width));
+    console.log(boxLine(`    ${dim('ID:')} ${gray(rider.userId)}`, width));
+    if (index < riders.length - 1) {
+      console.log(boxLine('', width));
+    }
   });
-  console.log('════════════════════════════════════════════════════════════════\n');
+
+  console.log(boxLine('', width));
+  console.log(boxLine(dim(`Total: ${riders.length} rider${riders.length !== 1 ? 's' : ''}`), width));
+  console.log(boxBottom(width) + '\n');
 }
 
 function displayDrivers() {
   const drivers = getDrivers();
-  console.log('\n╔════════════════════════════════════════════════════════════╗');
-  console.log('║                    AVAILABLE DRIVERS                       ║');
-  console.log('╚════════════════════════════════════════════════════════════╝');
-  drivers.forEach(driver => {
-    console.log(`  ${driver.name}`);
-    console.log(`    User ID: ${driver.userId}`);
-    console.log(`    First Name: ${driver.firstName}`);
-    console.log(`    Last Name: ${driver.lastName}`);
-    console.log('');
+  const width = 62;
+
+  console.log('\n' + boxTitle(`AVAILABLE DRIVERS ${emoji.driver}`, width));
+  console.log(boxLine('', width));
+
+  drivers.forEach((driver, index) => {
+    const num = yellow(`[${index + 1}]`);
+    const name = bold(cyan(driver.name));
+    console.log(boxLine(`${num} ${name}`, width));
+    console.log(boxLine(`    ${dim(`${emoji.phone}`)} ${gray(driver.userId)}`, width));
+    if (index < drivers.length - 1) {
+      console.log(boxLine('', width));
+    }
   });
-  console.log('════════════════════════════════════════════════════════════════\n');
+
+  console.log(boxLine('', width));
+  console.log(boxLine(dim(`Total: ${drivers.length} driver${drivers.length !== 1 ? 's' : ''}`), width));
+  console.log(boxBottom(width) + '\n');
 }
 
 function displayLocations() {
   const locations = getLocations();
-  console.log('\n╔════════════════════════════════════════════════════════════╗');
-  console.log('║                    AVAILABLE LOCATIONS                     ║');
-  console.log('╚════════════════════════════════════════════════════════════╝');
-  locations.forEach(loc => {
-    console.log(`  ${loc.name}`);
-    console.log(`    Title: ${loc.title}`);
-    console.log(`    Address: ${loc.fullAddress}`);
-    console.log(`    Coordinates: (${loc.latitude}, ${loc.longitude})`);
-    console.log(`    Place ID: ${loc.place_id}`);
-    console.log('');
+  const width = 62;
+
+  console.log('\n' + boxTitle(`AVAILABLE LOCATIONS ${emoji.location}`, width));
+  console.log(boxLine('', width));
+
+  locations.forEach((loc, index) => {
+    const num = yellow(`[${index + 1}]`);
+    const name = bold(cyan(loc.name));
+    const coords = gray(`(${loc.latitude}, ${loc.longitude})`);
+    console.log(boxLine(`${num} ${name} ${dim(coords)}`, width));
+    console.log(boxLine(`    ${dim(loc.title)}`, width));
+    if (index < locations.length - 1) {
+      console.log(boxLine('', width));
+    }
   });
-  console.log('════════════════════════════════════════════════════════════════\n');
+
+  console.log(boxLine('', width));
+  console.log(boxLine(dim(`Total: ${locations.length} location${locations.length !== 1 ? 's' : ''}`), width));
+  console.log(boxBottom(width) + '\n');
 }
 
 function connectToServer() {
@@ -220,58 +314,86 @@ function disconnectFromServer() {
 }
 
 function assumeRider(name) {
+  // Check if connected first
+  if (!connected) {
+    console.log('\n' + error('Not connected to server!'));
+    console.log(dim('  Connect first using: ') + cyan('connect') + '\n');
+    return;
+  }
+
   if (!name) {
-    console.log('Error: Please specify a rider name');
-    console.log('Usage: assume_rider "{name}"');
-    console.log('Example: assume_rider "Jane Smith"');
+    console.log('\n' + error('Please specify a rider name'));
+    console.log(dim('  Usage: ') + cyan('assume_rider "name"'));
+    console.log(dim('  Example: ') + cyan('assume_rider "Jane Smith"') + '\n');
     return;
   }
 
   const rider = getRiderByName(name);
   if (!rider) {
-    console.log(`Error: Rider "${name}" not found`);
-    console.log('Use display_riders to see available riders');
+    console.log('\n' + error(`Rider "${name}" not found`));
+    console.log(dim('  Use ') + cyan('display_riders') + dim(' to see available riders') + '\n');
     return;
   }
 
-  currentRider = rider;
-  console.log(`\n✓ You are now: ${rider.firstName} ${rider.lastName}`);
-  console.log(`  User ID: ${rider.userId}\n`);
-
-  // Register with server if connected
-  if (connected && socket) {
-    socket.emit('assume-identity', {
-      userType: 'rider',
-      userData: rider
-    });
+  // Check if overriding existing identity
+  if (currentRider) {
+    const prevName = `${currentRider.firstName} ${currentRider.lastName}`;
+    const newName = `${rider.firstName} ${rider.lastName}`;
+    console.log('\n' + warning('Updating identity...'));
+    console.log(dim('  Previous: ') + gray(prevName));
+    console.log(dim('  New: ') + cyan(newName));
   }
+
+  currentRider = rider;
+  console.log(success(`Identity set: ${rider.firstName} ${rider.lastName}`));
+  console.log(dim(`  User ID: ${rider.userId}`) + '\n');
+
+  // Register with server
+  socket.emit('assume-identity', {
+    userType: 'rider',
+    userData: rider
+  });
 }
 
 function assumeLocation(locationName) {
+  // Check if connected first
+  if (!connected) {
+    console.log('\n' + error('Not connected to server!'));
+    console.log(dim('  Connect first using: ') + cyan('connect') + '\n');
+    return;
+  }
+
   if (!currentRider) {
-    console.log('Error: Please assume a rider identity first');
-    console.log('Use: assume_rider "{name}"');
+    console.log('\n' + error('Please assume a rider identity first'));
+    console.log(dim('  Use: ') + cyan('assume_rider "name"') + '\n');
     return;
   }
 
   if (!locationName) {
-    console.log('Error: Please specify a location name');
-    console.log('Usage: assume_location "{location}"');
-    console.log('Example: assume_location "BGC"');
+    console.log('\n' + error('Please specify a location name'));
+    console.log(dim('  Usage: ') + cyan('assume_location "location"'));
+    console.log(dim('  Example: ') + cyan('assume_location "BGC"') + '\n');
     return;
   }
 
   const location = getLocationByName(locationName);
   if (!location) {
-    console.log(`Error: Location "${locationName}" not found`);
-    console.log('Use display_locations to see available locations');
+    console.log('\n' + error(`Location "${locationName}" not found`));
+    console.log(dim('  Use ') + cyan('display_locations') + dim(' to see available locations') + '\n');
     return;
   }
 
+  // Check if overriding existing location
+  if (currentLocation) {
+    console.log('\n' + warning('Updating location...'));
+    console.log(dim('  Previous: ') + gray(currentLocation.name));
+    console.log(dim('  New: ') + yellow(location.name));
+  }
+
   currentLocation = location;
-  console.log(`\n✓ Current location set to: ${location.title}`);
-  console.log(`  Address: ${location.fullAddress}`);
-  console.log(`  Coordinates: (${location.latitude}, ${location.longitude})\n`);
+  console.log(success(`Location set: ${location.title}`));
+  console.log(dim(`  Address: ${location.fullAddress}`));
+  console.log(dim(`  Coordinates: (${location.latitude}, ${location.longitude})`) + '\n');
 }
 
 function bookTrip(source, destination) {
@@ -349,31 +471,40 @@ function bookTrip(source, destination) {
 }
 
 function showStatus() {
-  console.log('\n╔════════════════════════════════════════════════════════════╗');
-  console.log('║                      RIDER STATUS                          ║');
-  console.log('╚════════════════════════════════════════════════════════════╝');
-  console.log(`  Connected: ${connected ? '✓ Yes' : '✗ No'}`);
-  console.log(`  Socket ID: ${mySocketId || 'N/A'}`);
-  console.log(`  Server URL: ${SERVER_URL}`);
-  console.log('');
+  const width = 62;
 
+  console.log('\n' + doubleBoxTitle(`RIDER STATUS ${emoji.rider}`, width));
+  console.log(doubleBoxLine('', width));
+
+  // Connection status
+  const connIcon = connected ? emoji.checkmark : emoji.cross;
+  const connText = connected ? green('Connected') : gray('Offline');
+  console.log(doubleBoxLine(`${emoji.connection} Connection    ${connIcon} ${connText}`, width));
+  console.log(doubleBoxLine(`${emoji.id} Socket ID      ${dim(mySocketId || 'N/A')}`, width));
+  console.log(doubleBoxLine(`${emoji.server} Server         ${dim(SERVER_URL)}`, width));
+  console.log(doubleBoxLine('', width));
+
+  // Identity
   if (currentRider) {
-    console.log(`  Rider Identity: ${currentRider.firstName} ${currentRider.lastName}`);
-    console.log(`  User ID: ${currentRider.userId}`);
+    const riderName = cyan(`${currentRider.firstName} ${currentRider.lastName}`);
+    console.log(doubleBoxLine(`${emoji.rider} Identity       ${riderName}`, width));
+    console.log(doubleBoxLine(`   User ID        ${dim(currentRider.userId)}`, width));
   } else {
-    console.log(`  Rider Identity: Not assumed`);
+    console.log(doubleBoxLine(`${emoji.rider} Identity       ${gray('Not assumed')}`, width));
   }
-  console.log('');
+  console.log(doubleBoxLine('', width));
 
+  // Location
   if (currentLocation) {
-    console.log(`  Current Location: ${currentLocation.title}`);
-    console.log(`  Address: ${currentLocation.fullAddress}`);
-    console.log(`  Coordinates: (${currentLocation.latitude}, ${currentLocation.longitude})`);
+    console.log(doubleBoxLine(`${emoji.location} Location       ${yellow(currentLocation.title)}`, width));
+    console.log(doubleBoxLine(`   ${dim(currentLocation.fullAddress)}`, width));
+    console.log(doubleBoxLine(`   ${dim(`Coordinates: ${currentLocation.latitude}, ${currentLocation.longitude}`)}`, width));
   } else {
-    console.log(`  Current Location: Not set`);
+    console.log(doubleBoxLine(`${emoji.location} Location       ${gray('Not set')}`, width));
   }
 
-  console.log('════════════════════════════════════════════════════════════════\n');
+  console.log(doubleBoxLine('', width));
+  console.log(doubleBoxBottom(width) + '\n');
 }
 
 // Handle CLI input
@@ -458,11 +589,13 @@ rl.on('line', (line) => {
 });
 
 // Initial prompt
-console.log('\n╔════════════════════════════════════════════════════════════╗');
-console.log('║              JOYRIDE RIDER CLIENT                          ║');
-console.log('╚════════════════════════════════════════════════════════════╝');
-console.log('\nType "connect" to connect to the server');
-console.log('Type "help" for available commands\n');
+console.log('\n' + doubleBoxTitle('JOYRIDE RIDER CLIENT', 62));
+console.log(doubleBoxLine('', 62));
+console.log(doubleBoxLine(`${emoji.rider} Welcome to the Joyride Rider Client!`, 62));
+console.log(doubleBoxLine('', 62));
+console.log(doubleBoxBottom(62));
+console.log('\n' + dim('  Type ') + cyan('connect') + dim(' to connect to the server'));
+console.log(dim('  Type ') + cyan('help') + dim(' for available commands\n'));
 rl.prompt();
 
 // Handle Ctrl+C
