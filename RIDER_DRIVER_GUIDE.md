@@ -1,4 +1,4 @@
-# Joyride WebSocket - Rider-Driver Booking System Guide
+# WebSocket - Rider-Driver Booking System Guide
 
 A real-time WebSocket-based trip booking system for riders and drivers, built with Socket.IO and Node.js.
 
@@ -448,88 +448,6 @@ const actionRouter = {
   }
 };
 ```
-
----
-
-## Troubleshooting
-
-### Driver not receiving trip request
-**Problem:** Driver doesn't see trip request notification after rider books.
-
-**Solutions:**
-- Check that driver has assumed identity with `assume_driver "{name}"`
-- Verify driver name matches **exactly** with API response (case-sensitive: "John Doe" not "john doe")
-- Check server logs for `[DRIVER ASSIGNMENT]` message
-- Verify driver is connected (`status` command should show "Connected: ✓ Yes")
-
-**Server logs to check:**
-```
-[DRIVER ASSIGNMENT] Driver assigned: John Doe
-[DRIVER NOTIFICATION] Notifying driver John Doe (socket-id)
-# OR
-[ERROR] Driver John Doe is not online or not found
-[ERROR] Available drivers: Maria Santos, Pedro Cruz
-```
-
----
-
-### API call fails
-**Problem:** Booking fails with error message.
-
-**Solutions:**
-- Verify internet connection
-- Check API endpoint is accessible:
-  ```bash
-  curl http://joyride-rewrite-alb-1006628052.ap-southeast-2.elb.amazonaws.com/trips
-  ```
-- Review server logs for error details:
-  ```
-  [ERROR] API call failed: connect ETIMEDOUT
-  [ERROR] Status: 500
-  [ERROR] Data: { error: "..." }
-  ```
-
----
-
-### "Looking for drivers" animation stuck
-**Problem:** Rider sees loading animation indefinitely.
-
-**Solutions:**
-- Check server logs for API response
-- Verify API is returning valid response format
-- Check network connectivity to external API
-- Look for timeout errors in server console
-
-**Expected server output:**
-```
-[API CALL] POST http://...
-[API RESPONSE] Status: 200
-[DRIVER ASSIGNMENT] Driver assigned: ...
-```
-
----
-
-### Cannot assume rider/driver
-**Problem:** `assume_rider "Name"` doesn't work.
-
-**Solutions:**
-- Ensure name is in quotes: `assume_rider "Jane Smith"` (not `assume_rider Jane Smith`)
-- Use exact names from `display_riders` or `display_drivers`
-- Names are case-sensitive
-
----
-
-### Connection refused
-**Problem:** `connect` command shows connection error.
-
-**Solutions:**
-- Ensure server is running (`npm run server` then type `start`)
-- Check server is listening on port 3000
-- If using remote server, set environment variable:
-  ```bash
-  WEBSOCKET_SERVER=your-server-ip npm run rider
-  ```
-
 ---
 
 ## File Structure
@@ -544,7 +462,7 @@ joyride-websocket/
 ├── redis-publisher.js         # Redis publisher for external messages
 ├── package.json               # Dependencies and scripts
 ├── README.md                  # Original documentation
-├── RIDER_DRIVER_GUIDE.md      # This file
+├── RIDER_DRIVER_GUIDE.md    
 └── Dockerfile                 # Docker configuration
 ```
 
@@ -631,29 +549,3 @@ tripToRider: Map<tripId, socketId>      // tripId → riderSocketId
 - **Scalability**: For multiple server instances, use Redis adapter (already configured)
 - **Timeout**: API calls timeout after 30 seconds
 
----
-
-## Future Enhancements
-
-- [ ] Multiple trip requests per rider
-- [ ] Driver location updates (real-time tracking)
-- [ ] Trip cancellation by rider
-- [ ] Trip completion flow
-- [ ] Persistent storage for analytics
-- [ ] Authentication/authorization
-- [ ] Rate limiting
-- [ ] Retry logic for API failures
-
----
-
-## Support
-
-For issues or questions:
-1. Check server logs for detailed error messages
-2. Verify all prerequisites are met
-3. Review this guide's troubleshooting section
-4. Check the original README.md for server setup
-
----
-
-**Happy Testing!** 🚗💨
