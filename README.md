@@ -5,7 +5,7 @@
 # run it manually
 npm run server
 
-REDIS_HOST=master.websocket-redis-correct.vghwpa.apse1.cache.amazonaws.com REDIS_PORT=637 REDIS_TLS=true REDIS_TLS_REJECT_UNAUTHORIZED=false npm run server
+REDIS_HOST=master.websocket-redis-correct.vghwpa.apse1.cache.amazonaws.com REDIS_PORT=6379 REDIS_TLS=true REDIS_TLS_REJECT_UNAUTHORIZED=false npm run server
 
 # run it via Docker
 docker build -t websocket-server .

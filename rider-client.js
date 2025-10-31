@@ -208,6 +208,7 @@ function showHelp() {
   console.log(boxLine('', width));
   console.log(boxLine(bold('Trip:'), width));
   console.log(boxLine(`  ${cyan('book_trip "from" "to"')} ${dim('- Book a trip')}`, width));
+  console.log(boxLine(`  ${cyan('compute_fare "from" "to"')} ${dim('- Estimate trip fare')}`, width));
   console.log(boxLine('', width));
   console.log(boxLine(bold('Other:'), width));
   console.log(boxLine(`  ${cyan('status')}                ${dim('- Show current status')}`, width));
@@ -396,6 +397,104 @@ function assumeLocation(locationName) {
   console.log(dim(`  Coordinates: (${location.latitude}, ${location.longitude})`) + '\n');
 }
 
+// Stubbed API function to compute fare
+async function computeFareAPI(sourceLat, sourceLon, destLat, destLon) {
+  // TODO: Replace with actual API call
+  // const response = await fetch('http://api.example.com/compute_fare', {
+  //   method: 'POST',
+  //   headers: { 'Content-Type': 'application/json' },
+  //   body: JSON.stringify({
+  //     source: { latitude: sourceLat, longitude: sourceLon },
+  //     destination: { latitude: destLat, longitude: destLon }
+  //   })
+  // });
+  // return await response.json();
+
+  // Stubbed response - simulating API calculation
+  const R = 6371; // Earth's radius in kilometers
+  const dLat = (destLat - sourceLat) * Math.PI / 180;
+  const dLon = (destLon - sourceLon) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(sourceLat * Math.PI / 180) * Math.cos(destLat * Math.PI / 180) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  const distance = R * c; // Distance in kilometers
+
+  // Calculate fare (example rates)
+  const baseFare = 40;
+  const perKmRate = 12;
+  const fare = baseFare + (distance * perKmRate);
+
+  // Estimate time (assuming average speed of 30 km/h in city traffic)
+  const time = (distance / 30) * 60; // Convert to minutes
+
+  return {
+    fare: fare,
+    distance: distance,
+    time: time
+  };
+}
+
+async function computeFare(source, destination) {
+  if (!source || !destination) {
+    console.log('\n' + error('Please specify both source and destination'));
+    console.log(dim('  Usage: ') + cyan('compute_fare "source" "destination"'));
+    console.log(dim('  Example: ') + cyan('compute_fare "BGC" "Makati"') + '\n');
+    return;
+  }
+
+  const sourceLocation = getLocationByName(source);
+  const destLocation = getLocationByName(destination);
+
+  if (!sourceLocation) {
+    console.log('\n' + error(`Source location "${source}" not found`));
+    console.log(dim('  Use ') + cyan('display_locations') + dim(' to see available locations') + '\n');
+    return;
+  }
+
+  if (!destLocation) {
+    console.log('\n' + error(`Destination location "${destination}" not found`));
+    console.log(dim('  Use ') + cyan('display_locations') + dim(' to see available locations') + '\n');
+    return;
+  }
+
+  console.log('\n' + info('Computing fare...') + '\n');
+
+  try {
+    // Call stubbed API
+    const result = await computeFareAPI(
+      sourceLocation.latitude,
+      sourceLocation.longitude,
+      destLocation.latitude,
+      destLocation.longitude
+    );
+
+    const width = 62;
+
+    console.log(boxTitle(`${emoji.money} FARE ESTIMATE`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
+    console.log(boxLine(`  ${cyan(sourceLocation.title)}`, width));
+    console.log(boxLine(`  ${dim(sourceLocation.fullAddress)}`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
+    console.log(boxLine(`  ${cyan(destLocation.title)}`, width));
+    console.log(boxLine(`  ${dim(destLocation.fullAddress)}`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.info} TRIP DETAILS`)), width));
+    console.log(boxLine(`  Distance: ${bold(result.distance.toFixed(2))} km`, width));
+    console.log(boxLine(`  Estimated Time: ${bold(Math.round(result.time))} minutes`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.money} ESTIMATED FARE`)), width));
+    console.log(boxLine(`  Total: ${green(bold(`₱${result.fare.toFixed(2)}`))}`, width));
+    console.log(boxLine('', width));
+    console.log(boxBottom(width) + '\n');
+    console.log("Press Enter to continue:" + '\n');
+  } catch (err) {
+    console.log('\n' + error(`Failed to compute fare: ${err.message}`) + '\n');
+  }
+}
+
 function bookTrip(source, destination) {
   if (!connected) {
     console.log('Error: Not connected to server! Use "connect" first.');
@@ -562,6 +661,10 @@ rl.on('line', (line) => {
 
     case 'book_trip':
       bookTrip(arg1, arg2);
+      break;
+
+    case 'compute_fare':
+      computeFare(arg1, arg2);
       break;
 
     case 'status':
