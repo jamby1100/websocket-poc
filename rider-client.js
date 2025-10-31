@@ -18,6 +18,8 @@ let currentLocation = null;
 let mySocketId = null;
 let lookingForDriversInterval = null;
 let pendingTripId = null;
+let pendingBooking = null; // Stores pending booking details during delay
+let bookingTimeout = null; // Stores timeout reference for cancellation
 
 // Create readline interface for client CLI
 const rl = readline.createInterface({
@@ -207,8 +209,11 @@ function showHelp() {
   console.log(boxLine(`  ${cyan('assume_location "loc"')} ${dim('- Set current location')}`, width));
   console.log(boxLine('', width));
   console.log(boxLine(bold('Trip:'), width));
-  console.log(boxLine(`  ${cyan('book_trip "from" "to"')} ${dim('- Book a trip')}`, width));
+  console.log(boxLine(`  ${cyan('book_trip "from" "to" [delay]')} ${dim('- Book a trip')}`, width));
   console.log(boxLine(`  ${cyan('compute_fare "from" "to"')} ${dim('- Estimate trip fare')}`, width));
+  console.log(boxLine(`  ${cyan('display_trip')} ${dim('- Show current trip details')}`, width));
+  console.log(boxLine(`  ${cyan('cancel_booking')} ${dim('- Cancel pending booking')}`, width));
+  console.log(boxLine(`  ${cyan('add_tip <amount>')} ${dim('- Add tip to pending booking')}`, width));
   console.log(boxLine('', width));
   console.log(boxLine(bold('Other:'), width));
   console.log(boxLine(`  ${cyan('status')}                ${dim('- Show current status')}`, width));
@@ -495,22 +500,160 @@ async function computeFare(source, destination) {
   }
 }
 
-function bookTrip(source, destination) {
+function sendTripRequest(requestPayload) {
+  // Start looking for drivers animation
+  startLookingForDrivers();
+
+  // Send to server
+  socket.emit('trip-request', requestPayload);
+
+  // Clear pending booking state
+  pendingBooking = null;
+  bookingTimeout = null;
+}
+
+function cancelBooking() {
+  if (!pendingBooking) {
+    console.log('\n' + warning('No pending booking to cancel') + '\n');
+    return;
+  }
+
+  // Clear the timeout
+  if (bookingTimeout) {
+    clearTimeout(bookingTimeout);
+    bookingTimeout = null;
+  }
+
+  const width = 62;
+  console.log('\n' + boxTitle(`${emoji.cross} BOOKING CANCELLED`, width));
+  console.log(boxLine('', width));
+  console.log(boxLine(red('Your booking request has been cancelled'), width));
+  console.log(boxLine('', width));
+  console.log(boxBottom(width) + '\n');
+
+  pendingBooking = null;
+}
+
+function addTip(tipAmount) {
+  if (!pendingBooking) {
+    console.log('\n' + warning('No pending booking to add tip to') + '\n');
+    return;
+  }
+
+  const tip = parseFloat(tipAmount);
+  if (isNaN(tip) || tip < 0) {
+    console.log('\n' + error('Invalid tip amount. Please enter a positive number') + '\n');
+    return;
+  }
+
+  // Add tip to the pending booking payload
+  if (!pendingBooking.payload.data.tip) {
+    pendingBooking.payload.data.tip = 0;
+  }
+  pendingBooking.payload.data.tip = tip;
+
+  const width = 62;
+  console.log('\n' + boxTitle(`${emoji.money} TIP ADDED`, width));
+  console.log(boxLine('', width));
+  console.log(boxLine(green(`Tip amount: ₱${tip.toFixed(2)}`), width));
+  console.log(boxLine(dim(`Booking will be sent in ${Math.ceil((pendingBooking.sendTime - Date.now()) / 1000)} seconds`), width));
+  console.log(boxLine('', width));
+  console.log(boxBottom(width) + '\n');
+}
+
+function displayCurrentTrip() {
+  if (!pendingBooking) {
+    console.log('\n' + warning('No pending booking to display') + '\n');
+    return;
+  }
+
+  const width = 62;
+  const { sourceLocation, destLocation, fareResult, payload, sendTime } = pendingBooking;
+  const tip = payload.data.tip || 0;
+  const baseFare = fareResult.fare;
+  const totalWithTip = baseFare + tip;
+  const remainingSeconds = Math.ceil((sendTime - Date.now()) / 1000);
+
+  console.log('\n' + doubleBoxTitle(`${emoji.clock} CURRENT TRIP DETAILS`, width));
+  console.log(doubleBoxLine('', width));
+
+  // Rider Info
+  console.log(doubleBoxLine(bold(yellow(`${emoji.rider} RIDER`)), width));
+  console.log(doubleBoxLine(`  ${cyan(`${payload.data.rider.firstName} ${payload.data.rider.lastName}`)}`, width));
+  console.log(doubleBoxLine(`  ${dim(`ID: ${payload.data.rider.userId}`)}`, width));
+  console.log(doubleBoxLine('', width));
+
+  // Pickup Location
+  console.log(doubleBoxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
+  console.log(doubleBoxLine(`  ${cyan(sourceLocation.title)}`, width));
+  console.log(doubleBoxLine(`  ${dim(sourceLocation.fullAddress)}`, width));
+  console.log(doubleBoxLine(`  ${dim(`Coordinates: ${sourceLocation.latitude}, ${sourceLocation.longitude}`)}`, width));
+  console.log(doubleBoxLine('', width));
+
+  // Destination
+  console.log(doubleBoxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
+  console.log(doubleBoxLine(`  ${cyan(destLocation.title)}`, width));
+  console.log(doubleBoxLine(`  ${dim(destLocation.fullAddress)}`, width));
+  console.log(doubleBoxLine(`  ${dim(`Coordinates: ${destLocation.latitude}, ${destLocation.longitude}`)}`, width));
+  console.log(doubleBoxLine('', width));
+
+  // Trip Details
+  console.log(doubleBoxLine(bold(yellow(`${emoji.info} TRIP DETAILS`)), width));
+  console.log(doubleBoxLine(`  Distance: ${bold(fareResult.distance.toFixed(2))} km`, width));
+  console.log(doubleBoxLine(`  Estimated Time: ${bold(Math.round(fareResult.time))} minutes`, width));
+  console.log(doubleBoxLine('', width));
+
+  // Fare Breakdown
+  console.log(doubleBoxLine(bold(yellow(`${emoji.money} FARE BREAKDOWN`)), width));
+  console.log(doubleBoxLine(`  Base Fare: ${green(`₱${baseFare.toFixed(2)}`)}`, width));
+  if (tip > 0) {
+    console.log(doubleBoxLine(`  Tip: ${green(`₱${tip.toFixed(2)}`)}`, width));
+    console.log(doubleBoxLine(`  ${dim('─'.repeat(40))}`, width));
+    console.log(doubleBoxLine(`  Total Amount: ${green(bold(`₱${totalWithTip.toFixed(2)}`))}`, width));
+  } else {
+    console.log(doubleBoxLine(`  Tip: ${dim('No tip added')}`, width));
+    console.log(doubleBoxLine(`  ${dim('─'.repeat(40))}`, width));
+    console.log(doubleBoxLine(`  Total Amount: ${green(bold(`₱${baseFare.toFixed(2)}`))}`, width));
+  }
+  console.log(doubleBoxLine('', width));
+
+  // Booking Status
+  console.log(doubleBoxLine(bold(yellow(`${emoji.clock} BOOKING STATUS`)), width));
+  if (remainingSeconds > 0) {
+    console.log(doubleBoxLine(`  Status: ${yellow('Scheduled')}`, width));
+    console.log(doubleBoxLine(`  Sending in: ${bold(`${remainingSeconds} seconds`)}`, width));
+  } else {
+    console.log(doubleBoxLine(`  Status: ${red('Overdue - sending soon')}`, width));
+  }
+  console.log(doubleBoxLine('', width));
+
+  // Available Actions
+  console.log(doubleBoxLine(dim(`Available commands:`), width));
+  console.log(doubleBoxLine(`  ${cyan('cancel_booking')} - Cancel this booking`, width));
+  console.log(doubleBoxLine(`  ${cyan('add_tip <amount>')} - ${tip > 0 ? 'Update tip amount' : 'Add a tip'}`, width));
+  console.log(doubleBoxLine('', width));
+
+  console.log(doubleBoxBottom(width) + '\n');
+}
+
+async function bookTrip(source, destination, delayInSeconds) {
   if (!connected) {
-    console.log('Error: Not connected to server! Use "connect" first.');
+    console.log('\n' + error('Not connected to server!'));
+    console.log(dim('  Use ') + cyan('connect') + dim(' first') + '\n');
     return;
   }
 
   if (!currentRider) {
-    console.log('Error: Please assume a rider identity first');
-    console.log('Use: assume_rider "{name}"');
+    console.log('\n' + error('Please assume a rider identity first'));
+    console.log(dim('  Use command: ') + cyan('display_riders') + dim(' to see list of riders'));
+    console.log(dim('  Use: ') + cyan('assume_rider "{name}"') + '\n');
     return;
   }
 
   if (!source || !destination) {
-    console.log('Error: Please specify both source and destination');
-    console.log('Usage: book_trip "{source}" "{destination}"');
-    console.log('Example: book_trip "BGC" "Makati CBD"');
+    console.log('\n' + error('Please specify both source and destination'));
+    console.log(dim('  Usage: ') + cyan('book_trip "{source}" "{destination}" [delay_seconds]'));
+    console.log(dim('  Example: ') + cyan('book_trip "BGC" "Makati" 10') + '\n');
     return;
   }
 
@@ -518,20 +661,39 @@ function bookTrip(source, destination) {
   const destLocation = getLocationByName(destination);
 
   if (!sourceLocation) {
-    console.log(`Error: Source location "${source}" not found`);
-    console.log('Use display_locations to see available locations');
+    console.log('\n' + error(`Source location "${source}" not found`));
+    console.log(dim('  Use ') + cyan('display_locations') + dim(' to see available locations') + '\n');
     return;
   }
 
   if (!destLocation) {
-    console.log(`Error: Destination location "${destination}" not found`);
-    console.log('Use display_locations to see available locations');
+    console.log('\n' + error(`Destination location "${destination}" not found`));
+    console.log(dim('  Use ') + cyan('display_locations') + dim(' to see available locations') + '\n');
     return;
   }
 
-  console.log('\n📍 Booking trip...');
-  console.log(`   From: ${sourceLocation.title}`);
-  console.log(`   To: ${destLocation.title}\n`);
+  // Parse delay
+  const delay = delayInSeconds ? parseInt(delayInSeconds) : 0;
+  if (delayInSeconds && (isNaN(delay) || delay < 0)) {
+    console.log('\n' + error('Invalid delay. Please enter a positive number of seconds') + '\n');
+    return;
+  }
+
+  // Compute fare first
+  console.log('\n' + info('Computing fare...') + '\n');
+
+  let fareResult;
+  try {
+    fareResult = await computeFareAPI(
+      sourceLocation.latitude,
+      sourceLocation.longitude,
+      destLocation.latitude,
+      destLocation.longitude
+    );
+  } catch (err) {
+    console.log('\n' + error(`Failed to compute fare: ${err.message}`) + '\n');
+    return;
+  }
 
   // Build the request payload
   const requestPayload = {
@@ -562,11 +724,71 @@ function bookTrip(source, destination) {
     }
   };
 
-  // Start looking for drivers animation
-  startLookingForDrivers();
+  const width = 62;
 
-  // Send to server
-  socket.emit('trip-request', requestPayload);
+  if (delay > 0) {
+    // Store pending booking
+    pendingBooking = {
+      payload: requestPayload,
+      sourceLocation,
+      destLocation,
+      fareResult,
+      sendTime: Date.now() + (delay * 1000)
+    };
+
+    console.log(boxTitle(`${emoji.clock} BOOKING SCHEDULED`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
+    console.log(boxLine(`  ${cyan(sourceLocation.title)}`, width));
+    console.log(boxLine(`  ${dim(sourceLocation.fullAddress)}`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
+    console.log(boxLine(`  ${cyan(destLocation.title)}`, width));
+    console.log(boxLine(`  ${dim(destLocation.fullAddress)}`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.info} TRIP DETAILS`)), width));
+    console.log(boxLine(`  Distance: ${bold(fareResult.distance.toFixed(2))} km`, width));
+    console.log(boxLine(`  Estimated Time: ${bold(Math.round(fareResult.time))} minutes`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.money} ESTIMATED FARE`)), width));
+    console.log(boxLine(`  Total: ${green(bold(`₱${fareResult.fare.toFixed(2)}`))}`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(yellow(`Booking will be sent in ${delay} seconds`), width));
+    console.log(boxLine('', width));
+    console.log(boxLine(dim(`Available commands:`), width));
+    console.log(boxLine(`  ${cyan('cancel_booking')} - Cancel this booking`, width));
+    console.log(boxLine(`  ${cyan('add_tip <amount>')} - Add tip to this booking`, width));
+    console.log(boxLine('', width));
+    console.log(boxBottom(width) + '\n');
+
+    // Schedule the booking
+    bookingTimeout = setTimeout(() => {
+      console.log('\n' + info('Sending booking request...') + '\n');
+      sendTripRequest(requestPayload);
+    }, delay * 1000);
+  } else {
+    // Send immediately with fare display
+    console.log(boxTitle(`${emoji.pickup} BOOKING TRIP`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
+    console.log(boxLine(`  ${cyan(sourceLocation.title)}`, width));
+    console.log(boxLine(`  ${dim(sourceLocation.fullAddress)}`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
+    console.log(boxLine(`  ${cyan(destLocation.title)}`, width));
+    console.log(boxLine(`  ${dim(destLocation.fullAddress)}`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.info} TRIP DETAILS`)), width));
+    console.log(boxLine(`  Distance: ${bold(fareResult.distance.toFixed(2))} km`, width));
+    console.log(boxLine(`  Estimated Time: ${bold(Math.round(fareResult.time))} minutes`, width));
+    console.log(boxLine('', width));
+    console.log(boxLine(bold(yellow(`${emoji.money} ESTIMATED FARE`)), width));
+    console.log(boxLine(`  Total: ${green(bold(`₱${fareResult.fare.toFixed(2)}`))}`, width));
+    console.log(boxLine('', width));
+    console.log(boxBottom(width) + '\n');
+
+    sendTripRequest(requestPayload);
+  }
 }
 
 function showStatus() {
@@ -610,8 +832,8 @@ function showStatus() {
 rl.on('line', (line) => {
   const input = line.trim();
 
-  // Parse command with quoted arguments
-  const matches = input.match(/(\w+)(?:\s+"([^"]+)")?(?:\s+"([^"]+)")?/);
+  // Parse command with quoted arguments and optional numeric parameter
+  const matches = input.match(/(\w+)(?:\s+"([^"]+)")?(?:\s+"([^"]+)")?(?:\s+(\S+))?/);
 
   if (!matches) {
     if (input !== '') {
@@ -625,6 +847,7 @@ rl.on('line', (line) => {
   const command = matches[1].toLowerCase();
   const arg1 = matches[2];
   const arg2 = matches[3];
+  const arg3 = matches[4];
 
   switch (command) {
     case 'help':
@@ -660,7 +883,19 @@ rl.on('line', (line) => {
       break;
 
     case 'book_trip':
-      bookTrip(arg1, arg2);
+      bookTrip(arg1, arg2, arg3);
+      break;
+
+    case 'display_trip':
+      displayCurrentTrip();
+      break;
+
+    case 'cancel_booking':
+      cancelBooking();
+      break;
+
+    case 'add_tip':
+      addTip(arg1);
       break;
 
     case 'compute_fare':
