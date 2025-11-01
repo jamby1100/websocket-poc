@@ -5,6 +5,12 @@ const { success, error, warning, info, bold, dim, green, red, yellow, cyan, gray
         doubleBoxTitle, doubleBoxLine, doubleBoxSeparator, doubleBoxBottom,
         boxTitle, boxLine, boxBottom, emoji } = require('./colors');
 
+// Import domain classes
+const Rider = require('./app/domains/rider');
+const Driver = require('./app/domains/driver');
+const Trip = require('./app/domains/trip');
+const Location = require('./app/domains/location');
+
 // Server configuration
 const SERVER_HOST = process.env.WEBSOCKET_SERVER || 'localhost';
 const SERVER_PORT = process.env.WEBSOCKET_PORT || '3000';
@@ -13,14 +19,12 @@ const SERVER_URL = `http://${SERVER_HOST}:${SERVER_PORT}`;
 // Client state
 let socket = null;
 let connected = false;
-let currentRider = null;
+let currentRider = null; // Will be a Rider instance
 let currentLocation = null;
 let mySocketId = null;
 let lookingForDriversInterval = null;
-let pendingTripId = null;
-let pendingBooking = null; // Stores pending booking details during delay
+let currentTrip = null; // Will be a Trip instance (replaces pendingTripId, pendingBooking, activeTripData)
 let bookingTimeout = null; // Stores timeout reference for cancellation
-let activeTripData = null; // Stores active trip data after it's been sent
 
 // Create readline interface for client CLI
 const rl = readline.createInterface({
@@ -41,13 +45,13 @@ function setupSocketListeners() {
     if (currentRider) {
       socket.emit('assume-identity', {
         userType: 'rider',
-        userData: currentRider
+        userData: currentRider.data
       });
 
       // Check for active trips for this user
       console.log(info('Checking for active trips...'));
       socket.emit('check-active-trip', {
-        userId: currentRider.userId
+        userId: currentRider.data.userId
       });
     } else {
       rl.prompt();
@@ -61,16 +65,17 @@ function setupSocketListeners() {
     // Clear session state
     const hadIdentity = currentRider !== null;
     const hadLocation = currentLocation !== null;
+    const hadTrip = currentTrip !== null;
     currentRider = null;
     currentLocation = null;
-    pendingTripId = null;
-    activeTripData = null;
+    currentTrip = null;
 
     console.log('\n' + error('Disconnected from server'));
-    if (hadIdentity || hadLocation) {
+    if (hadIdentity || hadLocation || hadTrip) {
       console.log(warning('Session cleared:'));
       if (hadIdentity) console.log(dim('  • Identity reset'));
       if (hadLocation) console.log(dim('  • Location reset'));
+      if (hadTrip) console.log(dim('  • Trip cleared'));
     }
     console.log('');
 
@@ -113,9 +118,8 @@ function setupSocketListeners() {
     // Start continuous "Looking for drivers..." animation
     startLookingForDrivers();
 
-    // Store trip data for display_trip command
-    pendingTripId = data.tripId;
-    activeTripData = data;
+    // // Create Trip instance from trip-created event
+    // currentTrip = Trip.fromTripCreatedEvent(data);
   });
 
   socket.on('trip-error', (data) => {
@@ -131,7 +135,7 @@ function setupSocketListeners() {
     console.log(doubleBoxBottom(width));
     console.log('');
 
-    pendingTripId = null;
+    currentTrip = null;
     rl.prompt();
   });
 
@@ -151,7 +155,12 @@ function setupSocketListeners() {
     console.log(doubleBoxBottom(width));
     console.log('');
 
-    pendingTripId = null;
+    // Update trip status and driver info
+    if (currentTrip) {
+      currentTrip.setStatus('accepted');
+      currentTrip.data.driver = { name: data.driverName };
+    }
+
     rl.prompt();
   });
 
@@ -201,17 +210,16 @@ function setupSocketListeners() {
       console.log(doubleBoxBottom(width));
       console.log('');
 
-      // Restore trip data
-      pendingTripId = data.tripData.tripId;
-      activeTripData = data.tripData;
+      // Restore trip data as Trip instance
+      currentTrip = Trip.fromData(data.tripData);
 
       // If still looking for drivers, start animation
-      if (data.tripData.status === 'pending' || data.tripData.status === 'looking_for_driver') {
+      if (currentTrip.isLookingForDriver() || currentTrip.isPending()) {
         startLookingForDrivers();
       }
     } else {
       // No active trip
-      console.log('\n' + dim(`No active trips found for ${currentRider.firstName} ${currentRider.lastName}`) + '\n');
+      console.log('\n' + dim(`No active trips found for ${currentRider.getFullName()}`) + '\n');
     }
 
     rl.prompt();
@@ -293,7 +301,8 @@ function showHelp() {
 }
 
 function displayRiders() {
-  const riders = getRiders();
+  const ridersData = getRiders();
+  const riders = Rider.fromArray(ridersData);
   const width = 62;
 
   console.log('\n' + boxTitle(`AVAILABLE RIDERS ${emoji.rider}`, width));
@@ -301,9 +310,9 @@ function displayRiders() {
 
   riders.forEach((rider, index) => {
     const num = yellow(`[${index + 1}]`);
-    const name = bold(cyan(rider.name));
+    const name = bold(cyan(rider.data.name));
     console.log(boxLine(`${num} ${name}`, width));
-    console.log(boxLine(`    ${dim('ID:')} ${gray(rider.userId)}`, width));
+    console.log(boxLine(`    ${dim('ID:')} ${gray(rider.data.userId)}`, width));
     if (index < riders.length - 1) {
       console.log(boxLine('', width));
     }
@@ -315,7 +324,8 @@ function displayRiders() {
 }
 
 function displayDrivers() {
-  const drivers = getDrivers();
+  const driversData = getDrivers();
+  const drivers = Driver.fromArray(driversData);
   const width = 62;
 
   console.log('\n' + boxTitle(`AVAILABLE DRIVERS ${emoji.driver}`, width));
@@ -323,9 +333,9 @@ function displayDrivers() {
 
   drivers.forEach((driver, index) => {
     const num = yellow(`[${index + 1}]`);
-    const name = bold(cyan(driver.name));
+    const name = bold(cyan(driver.data.name));
     console.log(boxLine(`${num} ${name}`, width));
-    console.log(boxLine(`    ${dim(`${emoji.phone}`)} ${gray(driver.userId)}`, width));
+    console.log(boxLine(`    ${dim(`${emoji.phone}`)} ${gray(driver.data.userId)}`, width));
     if (index < drivers.length - 1) {
       console.log(boxLine('', width));
     }
@@ -337,7 +347,8 @@ function displayDrivers() {
 }
 
 function displayLocations() {
-  const locations = getLocations();
+  const locationData = getLocations();
+  const locations = Location.fromArray(locationData);
   const width = 62;
 
   console.log('\n' + boxTitle(`AVAILABLE LOCATIONS ${emoji.location}`, width));
@@ -345,10 +356,10 @@ function displayLocations() {
 
   locations.forEach((loc, index) => {
     const num = yellow(`[${index + 1}]`);
-    const name = bold(cyan(loc.name));
-    const coords = gray(`(${loc.latitude}, ${loc.longitude})`);
+    const name = bold(cyan(loc.data.name));
+    const coords = gray(`(${loc.data.latitude}, ${loc.data.longitude})`);
     console.log(boxLine(`${num} ${name} ${dim(coords)}`, width));
-    console.log(boxLine(`    ${dim(loc.title)}`, width));
+    console.log(boxLine(`    ${dim(loc.data.title)}`, width));
     if (index < locations.length - 1) {
       console.log(boxLine('', width));
     }
@@ -403,36 +414,39 @@ function assumeRider(name) {
     return;
   }
 
-  const rider = getRiderByName(name);
-  if (!rider) {
+  const riderData = getRiderByName(name);
+  if (!riderData) {
     console.log('\n' + error(`Rider "${name}" not found`));
     console.log(dim('  Use ') + cyan('display_riders') + dim(' to see available riders') + '\n');
     return;
   }
 
+  // Create Rider instance
+  const rider = new Rider(riderData);
+
   // Check if overriding existing identity
   if (currentRider) {
-    const prevName = `${currentRider.firstName} ${currentRider.lastName}`;
-    const newName = `${rider.firstName} ${rider.lastName}`;
+    const prevName = currentRider.getFullName();
+    const newName = rider.getFullName();
     console.log('\n' + warning('Updating identity...'));
     console.log(dim('  Previous: ') + gray(prevName));
     console.log(dim('  New: ') + cyan(newName));
   }
 
   currentRider = rider;
-  console.log(success(`Identity set: ${rider.firstName} ${rider.lastName}`));
-  console.log(dim(`  User ID: ${rider.userId}`));
+  console.log(success(`Identity set: ${rider.getFullName()}`));
+  console.log(dim(`  User ID: ${rider.data.userId}`));
 
   // Register with server
   socket.emit('assume-identity', {
     userType: 'rider',
-    userData: rider
+    userData: rider.data
   });
 
   // Check for active trips for this user
   console.log(info('Checking for active trips...'));
   socket.emit('check-active-trip', {
-    userId: rider.userId
+    userId: rider.data.userId
   });
 }
 
@@ -457,24 +471,27 @@ function assumeLocation(locationName) {
     return;
   }
 
-  const location = getLocationByName(locationName);
-  if (!location) {
+  const locationData = getLocationByName(locationName);
+  if (!locationData) {
     console.log('\n' + error(`Location "${locationName}" not found`));
     console.log(dim('  Use ') + cyan('display_locations') + dim(' to see available locations') + '\n');
     return;
   }
 
+  // Create Location instance
+  const location = new Location(locationData);
+
   // Check if overriding existing location
   if (currentLocation) {
     console.log('\n' + warning('Updating location...'));
-    console.log(dim('  Previous: ') + gray(currentLocation.name));
-    console.log(dim('  New: ') + yellow(location.name));
+    console.log(dim('  Previous: ') + gray(currentLocation.data.name));
+    console.log(dim('  New: ') + yellow(location.data.name));
   }
 
   currentLocation = location;
-  console.log(success(`Location set: ${location.title}`));
-  console.log(dim(`  Address: ${location.fullAddress}`));
-  console.log(dim(`  Coordinates: (${location.latitude}, ${location.longitude})`) + '\n');
+  console.log(success(`Location set: ${location.data.title}`));
+  console.log(dim(`  Address: ${location.data.fullAddress}`));
+  console.log(dim(`  Coordinates: (${location.data.latitude}, ${location.data.longitude})`) + '\n');
 }
 
 // Stubbed API function to compute fare
@@ -523,30 +540,34 @@ async function computeFare(source, destination) {
     return;
   }
 
-  const sourceLocation = getLocationByName(source);
-  const destLocation = getLocationByName(destination);
+  const sourceData = getLocationByName(source);
+  const destData = getLocationByName(destination);
 
-  if (!sourceLocation) {
+  if (!sourceData) {
     console.log('\n' + error(`Source location "${source}" not found`));
     console.log(dim('  Use ') + cyan('display_locations') + dim(' to see available locations') + '\n');
     return;
   }
 
-  if (!destLocation) {
+  if (!destData) {
     console.log('\n' + error(`Destination location "${destination}" not found`));
     console.log(dim('  Use ') + cyan('display_locations') + dim(' to see available locations') + '\n');
     return;
   }
+
+  // Create Location instances
+  const sourceLocation = new Location(sourceData);
+  const destLocation = new Location(destData);
 
   console.log('\n' + info('Computing fare...') + '\n');
 
   try {
     // Call stubbed API
     const result = await computeFareAPI(
-      sourceLocation.latitude,
-      sourceLocation.longitude,
-      destLocation.latitude,
-      destLocation.longitude
+      sourceLocation.data.latitude,
+      sourceLocation.data.longitude,
+      destLocation.data.latitude,
+      destLocation.data.longitude
     );
 
     const width = 62;
@@ -554,12 +575,12 @@ async function computeFare(source, destination) {
     console.log(boxTitle(`${emoji.money} FARE ESTIMATE`, width));
     console.log(boxLine('', width));
     console.log(boxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
-    console.log(boxLine(`  ${cyan(sourceLocation.title)}`, width));
-    console.log(boxLine(`  ${dim(sourceLocation.fullAddress)}`, width));
+    console.log(boxLine(`  ${cyan(sourceLocation.data.title)}`, width));
+    console.log(boxLine(`  ${dim(sourceLocation.data.fullAddress)}`, width));
     console.log(boxLine('', width));
     console.log(boxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
-    console.log(boxLine(`  ${cyan(destLocation.title)}`, width));
-    console.log(boxLine(`  ${dim(destLocation.fullAddress)}`, width));
+    console.log(boxLine(`  ${cyan(destLocation.data.title)}`, width));
+    console.log(boxLine(`  ${dim(destLocation.data.fullAddress)}`, width));
     console.log(boxLine('', width));
     console.log(boxLine(bold(yellow(`${emoji.info} TRIP DETAILS`)), width));
     console.log(boxLine(`  Distance: ${bold(result.distance.toFixed(2))} km`, width));
@@ -582,13 +603,17 @@ function sendTripRequest(requestPayload) {
   // Send to server
   socket.emit('trip-request', requestPayload);
 
-  // Clear pending booking state
-  pendingBooking = null;
+  // Update trip status if exists
+  if (currentTrip && currentTrip.isPending()) {
+    currentTrip.setStatus('looking_for_driver');
+  }
+
+  // Clear timeout reference
   bookingTimeout = null;
 }
 
 function cancelBooking() {
-  if (!pendingBooking) {
+  if (!currentTrip || !currentTrip.isPending()) {
     console.log('\n' + warning('No pending booking to cancel') + '\n');
     return;
   }
@@ -606,7 +631,8 @@ function cancelBooking() {
   console.log(boxLine('', width));
   console.log(boxBottom(width) + '\n');
 
-  pendingBooking = null;
+  // Clear the trip
+  currentTrip = null;
 }
 
 // Stubbed API function to check for active trips
@@ -644,81 +670,80 @@ async function addTipAPI(tripId, tipAmount) {
 }
 
 async function addTip(tipAmount) {
-  // Validate tip amount
-  const tip = parseFloat(tipAmount);
-  if (isNaN(tip) || tip < 0) {
-    console.log('\n' + error('Invalid tip amount. Please enter a positive number') + '\n');
-    return;
-  }
-
   const width = 62;
 
-  // Case 1: Adding tip to pending booking (before trip is sent)
-  if (pendingBooking) {
-    // Add tip to the pending booking payload
-    if (!pendingBooking.payload.data.tip) {
-      pendingBooking.payload.data.tip = 0;
-    }
-    pendingBooking.payload.data.tip = tip;
-
-    console.log('\n' + boxTitle(`${emoji.money} TIP ADDED`, width));
-    console.log(boxLine('', width));
-    console.log(boxLine(green(`Tip amount: ₱${tip.toFixed(2)}`), width));
-    console.log(boxLine(dim(`Booking will be sent in ${Math.ceil((pendingBooking.sendTime - Date.now()) / 1000)} seconds`), width));
-    console.log(boxLine('', width));
-    console.log(boxBottom(width) + '\n');
+  // Check if there's a current trip
+  if (!currentTrip || !currentTrip.isActive()) {
+    console.log('\n' + warning('No active trip to add tip to') + '\n');
+    console.log(dim('  You can add a tip:') + '\n');
+    console.log(dim('  1. During the delay period after booking with ') + cyan('book_trip "from" "to" delay'));
+    console.log(dim('  2. After the trip has been sent and accepted by a driver') + '\n');
     return;
   }
 
-  // Case 2: Adding tip to active trip (after trip is sent)
-  if (pendingTripId) {
-    console.log('\n' + info('Adding tip to your trip...') + '\n');
+  // Validate and add tip using Trip class method
+  try {
+    currentTrip.addTip(tipAmount);
+    const tip = currentTrip.data.tip;
 
-    try {
-      // Call stubbed API to add tip
-      const result = await addTipAPI(pendingTripId, tip);
-
-      // Update activeTripData with the tip
-      if (activeTripData) {
-        if (!activeTripData.tip) {
-          activeTripData.tip = 0;
-        }
-        activeTripData.tip = tip;
-      }
-
-      console.log(boxTitle(`${emoji.money} TIP ADDED`, width));
+    // Case 1: Adding tip to pending booking (before trip is sent)
+    if (currentTrip.isPending()) {
+      console.log('\n' + boxTitle(`${emoji.money} TIP ADDED`, width));
       console.log(boxLine('', width));
-      console.log(boxLine(green(`Trip ID: ${pendingTripId}`), width));
       console.log(boxLine(green(`Tip amount: ₱${tip.toFixed(2)}`), width));
-      console.log(boxLine('', width));
-      console.log(boxLine(success(result.message), width));
+      console.log(boxLine(dim(`Booking will be sent in ${currentTrip.getRemainingSeconds()} seconds`), width));
       console.log(boxLine('', width));
       console.log(boxBottom(width) + '\n');
-    } catch (err) {
-      console.log('\n' + error(`Failed to add tip: ${err.message}`) + '\n');
-      console.log(dim('Stack trace:'));
-      console.log(dim(err.stack) + '\n');
+      return;
     }
-    return;
-  }
 
-  // Case 3: No pending booking or active trip
-  console.log('\n' + warning('No active trip to add tip to') + '\n');
-  console.log(dim('  You can add a tip:') + '\n');
-  console.log(dim('  1. During the delay period after booking with ') + cyan('book_trip "from" "to" delay'));
-  console.log(dim('  2. After the trip has been sent and accepted by a driver') + '\n');
+    // Case 2: Adding tip to active trip (after trip is sent)
+    if (currentTrip.data.tripId) {
+      console.log('\n' + info('Adding tip to your trip...') + '\n');
+
+      try {
+        // Call stubbed API to add tip
+        const result = await addTipAPI(currentTrip.data.tripId, tip);
+
+        console.log(boxTitle(`${emoji.money} TIP ADDED`, width));
+        console.log(boxLine('', width));
+        console.log(boxLine(green(`Trip ID: ${currentTrip.data.tripId}`), width));
+        console.log(boxLine(green(`Tip amount: ₱${tip.toFixed(2)}`), width));
+        console.log(boxLine('', width));
+        console.log(boxLine(success(result.message), width));
+        console.log(boxLine('', width));
+        console.log(boxBottom(width) + '\n');
+      } catch (err) {
+        console.log('\n' + error(`Failed to add tip: ${err.message}`) + '\n');
+        console.log(dim('Stack trace:'));
+        console.log(dim(err.stack) + '\n');
+      }
+    }
+  } catch (err) {
+    console.log('\n' + error(err.message) + '\n');
+  }
 }
 
 function displayCurrentTrip() {
   const width = 62;
 
+  // Check if there's a current trip
+  if (!currentTrip) {
+    console.log('\n' + warning('No active trip to display') + '\n');
+    console.log(dim('  Book a trip using: ') + cyan('book_trip "from" "to" [delay]') + '\n');
+    return;
+  }
+
   // Case 1: Display pending booking (during delay period)
-  if (pendingBooking) {
-    const { sourceLocation, destLocation, fareResult, payload, sendTime } = pendingBooking;
-    const tip = payload.data.tip || 0;
-    const baseFare = fareResult.fare;
-    const totalWithTip = baseFare + tip;
-    const remainingSeconds = Math.ceil((sendTime - Date.now()) / 1000);
+  if (currentTrip.isPending()) {
+    const sourceLocation = currentTrip.getSourceLocation();
+    const destLocation = currentTrip.getDestinationLocation();
+    const fareResult = currentTrip.data.fareResult;
+    const payload = currentTrip.data.payload;
+    const tip = currentTrip.data.tip;
+    const baseFare = currentTrip.getBaseFare();
+    const totalWithTip = currentTrip.getTotalAmount();
+    const remainingSeconds = currentTrip.getRemainingSeconds();
 
     console.log('\n' + doubleBoxTitle(`${emoji.clock} PENDING TRIP DETAILS`, width));
     console.log(doubleBoxLine('', width));
@@ -731,16 +756,16 @@ function displayCurrentTrip() {
 
     // Pickup Location
     console.log(doubleBoxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
-    console.log(doubleBoxLine(`  ${cyan(sourceLocation.title)}`, width));
-    console.log(doubleBoxLine(`  ${dim(sourceLocation.fullAddress)}`, width));
-    console.log(doubleBoxLine(`  ${dim(`Coordinates: ${sourceLocation.latitude}, ${sourceLocation.longitude}`)}`, width));
+    console.log(doubleBoxLine(`  ${cyan(sourceLocation.data.title)}`, width));
+    console.log(doubleBoxLine(`  ${dim(sourceLocation.data.fullAddress)}`, width));
+    console.log(doubleBoxLine(`  ${dim(`Coordinates: ${sourceLocation.data.latitude}, ${sourceLocation.data.longitude}`)}`, width));
     console.log(doubleBoxLine('', width));
 
     // Destination
     console.log(doubleBoxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
-    console.log(doubleBoxLine(`  ${cyan(destLocation.title)}`, width));
-    console.log(doubleBoxLine(`  ${dim(destLocation.fullAddress)}`, width));
-    console.log(doubleBoxLine(`  ${dim(`Coordinates: ${destLocation.latitude}, ${destLocation.longitude}`)}`, width));
+    console.log(doubleBoxLine(`  ${cyan(destLocation.data.title)}`, width));
+    console.log(doubleBoxLine(`  ${dim(destLocation.data.fullAddress)}`, width));
+    console.log(doubleBoxLine(`  ${dim(`Coordinates: ${destLocation.data.latitude}, ${destLocation.data.longitude}`)}`, width));
     console.log(doubleBoxLine('', width));
 
     // Trip Details
@@ -784,69 +809,62 @@ function displayCurrentTrip() {
   }
 
   // Case 2: Display active trip (after trip has been sent)
-  if (activeTripData) {
-    const data = activeTripData;
-    const tip = data.tip || 0;
-    const baseFare = data.fare.total;
-    const totalWithTip = baseFare + tip;
+  const data = currentTrip.data;
+  const tip = currentTrip.data.tip || 0;
+  const baseFare = currentTrip.getBaseFare();
+  const totalWithTip = currentTrip.getTotalAmount();
 
-    console.log('\n' + doubleBoxTitle(`${emoji.pickup} ACTIVE TRIP DETAILS`, width));
-    console.log(doubleBoxLine('', width));
+  console.log('\n' + doubleBoxTitle(`${emoji.pickup} ACTIVE TRIP DETAILS`, width));
+  console.log(doubleBoxLine('', width));
 
-    // Trip ID
-    console.log(doubleBoxLine(bold(yellow(`${emoji.id} TRIP ID`)), width));
-    console.log(doubleBoxLine(`  ${cyan(data.tripId)}`, width));
-    console.log(doubleBoxLine('', width));
+  // Trip ID
+  console.log(doubleBoxLine(bold(yellow(`${emoji.id} TRIP ID`)), width));
+  console.log(doubleBoxLine(`  ${cyan(data.tripId)}`, width));
+  console.log(doubleBoxLine('', width));
 
-    // Rider Info
-    console.log(doubleBoxLine(bold(yellow(`${emoji.rider} RIDER`)), width));
-    console.log(doubleBoxLine(`  ${cyan(`${data.rider.firstName} ${data.rider.lastName}`)}`, width));
-    console.log(doubleBoxLine(`  ${dim(`ID: ${data.rider.userId}`)}`, width));
-    console.log(doubleBoxLine('', width));
+  // Rider Info
+  console.log(doubleBoxLine(bold(yellow(`${emoji.rider} RIDER`)), width));
+  console.log(doubleBoxLine(`  ${cyan(`${data.rider.firstName} ${data.rider.lastName}`)}`, width));
+  console.log(doubleBoxLine(`  ${dim(`ID: ${data.rider.userId}`)}`, width));
+  console.log(doubleBoxLine('', width));
 
-    // Pickup Location
-    console.log(doubleBoxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
-    console.log(doubleBoxLine(`  ${cyan(data.rider.location.source.title)}`, width));
-    console.log(doubleBoxLine(`  ${dim(data.rider.location.source.fullAddress)}`, width));
-    console.log(doubleBoxLine('', width));
+  // Pickup Location
+  console.log(doubleBoxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
+  console.log(doubleBoxLine(`  ${cyan(data.rider.location.source.title)}`, width));
+  console.log(doubleBoxLine(`  ${dim(data.rider.location.source.fullAddress)}`, width));
+  console.log(doubleBoxLine('', width));
 
-    // Destination
-    console.log(doubleBoxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
-    console.log(doubleBoxLine(`  ${cyan(data.rider.location.destination.title)}`, width));
-    console.log(doubleBoxLine(`  ${dim(data.rider.location.destination.fullAddress)}`, width));
-    console.log(doubleBoxLine('', width));
+  // Destination
+  console.log(doubleBoxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
+  console.log(doubleBoxLine(`  ${cyan(data.rider.location.destination.title)}`, width));
+  console.log(doubleBoxLine(`  ${dim(data.rider.location.destination.fullAddress)}`, width));
+  console.log(doubleBoxLine('', width));
 
-    // Fare Breakdown
-    console.log(doubleBoxLine(bold(yellow(`${emoji.money} FARE BREAKDOWN`)), width));
-    console.log(doubleBoxLine(`  Base Fare: ${green(`₱${baseFare.toFixed(2)}`)}`, width));
-    if (tip > 0) {
-      console.log(doubleBoxLine(`  Tip: ${green(`₱${tip.toFixed(2)}`)}`, width));
-      console.log(doubleBoxLine(`  ${dim('─'.repeat(40))}`, width));
-      console.log(doubleBoxLine(`  Total Amount: ${green(bold(`₱${totalWithTip.toFixed(2)}`))}`, width));
-    } else {
-      console.log(doubleBoxLine(`  Tip: ${dim('No tip added')}`, width));
-      console.log(doubleBoxLine(`  ${dim('─'.repeat(40))}`, width));
-      console.log(doubleBoxLine(`  Total Amount: ${green(bold(`₱${baseFare.toFixed(2)}`))}`, width));
-    }
-    console.log(doubleBoxLine('', width));
-
-    // Status
-    console.log(doubleBoxLine(bold(yellow(`${emoji.info} STATUS`)), width));
-    console.log(doubleBoxLine(`  ${yellow('Looking for drivers...')}`, width));
-    console.log(doubleBoxLine('', width));
-
-    // Available Actions
-    console.log(doubleBoxLine(dim(`Available commands:`), width));
-    console.log(doubleBoxLine(`  ${cyan('add_tip <amount>')} - ${tip > 0 ? 'Update tip amount' : 'Add a tip'}`, width));
-    console.log(doubleBoxLine('', width));
-
-    console.log(doubleBoxBottom(width) + '\n');
-    return;
+  // Fare Breakdown
+  console.log(doubleBoxLine(bold(yellow(`${emoji.money} FARE BREAKDOWN`)), width));
+  console.log(doubleBoxLine(`  Base Fare: ${green(`₱${baseFare.toFixed(2)}`)}`, width));
+  if (tip > 0) {
+    console.log(doubleBoxLine(`  Tip: ${green(`₱${tip.toFixed(2)}`)}`, width));
+    console.log(doubleBoxLine(`  ${dim('─'.repeat(40))}`, width));
+    console.log(doubleBoxLine(`  Total Amount: ${green(bold(`₱${totalWithTip.toFixed(2)}`))}`, width));
+  } else {
+    console.log(doubleBoxLine(`  Tip: ${dim('No tip added')}`, width));
+    console.log(doubleBoxLine(`  ${dim('─'.repeat(40))}`, width));
+    console.log(doubleBoxLine(`  Total Amount: ${green(bold(`₱${baseFare.toFixed(2)}`))}`, width));
   }
+  console.log(doubleBoxLine('', width));
 
-  // Case 3: No trip to display
-  console.log('\n' + warning('No active trip to display') + '\n');
-  console.log(dim('  Book a trip using: ') + cyan('book_trip "from" "to" [delay]') + '\n');
+  // Status
+  console.log(doubleBoxLine(bold(yellow(`${emoji.info} STATUS`)), width));
+  console.log(doubleBoxLine(`  ${yellow('Looking for drivers...')}`, width));
+  console.log(doubleBoxLine('', width));
+
+  // Available Actions
+  console.log(doubleBoxLine(dim(`Available commands:`), width));
+  console.log(doubleBoxLine(`  ${cyan('add_tip <amount>')} - ${tip > 0 ? 'Update tip amount' : 'Add a tip'}`, width));
+  console.log(doubleBoxLine('', width));
+
+  console.log(doubleBoxBottom(width) + '\n');
 }
 
 async function bookTrip(source, destination, delayInSeconds) {
@@ -864,14 +882,14 @@ async function bookTrip(source, destination, delayInSeconds) {
   }
 
   // Check if user already has an active trip
-  if (activeTripData || pendingTripId) {
+  if (currentTrip && currentTrip.isActive()) {
     const width = 62;
     console.log('\n' + boxTitle(`${emoji.warning} CANNOT BOOK TRIP`, width));
     console.log(boxLine('', width));
     console.log(boxLine(red('You already have an active trip!'), width));
     console.log(boxLine('', width));
-    if (pendingTripId) {
-      console.log(boxLine(`Trip ID: ${dim(pendingTripId)}`, width));
+    if (currentTrip.data.tripId) {
+      console.log(boxLine(`Trip ID: ${dim(currentTrip.data.tripId)}`, width));
       console.log(boxLine('', width));
     }
     console.log(boxLine(dim(`Use ${cyan('display_trip')} to view trip details`), width));
@@ -888,20 +906,24 @@ async function bookTrip(source, destination, delayInSeconds) {
     return;
   }
 
-  const sourceLocation = getLocationByName(source);
-  const destLocation = getLocationByName(destination);
+  const sourceData = getLocationByName(source);
+  const destData = getLocationByName(destination);
 
-  if (!sourceLocation) {
+  if (!sourceData) {
     console.log('\n' + error(`Source location "${source}" not found`));
     console.log(dim('  Use ') + cyan('display_locations') + dim(' to see available locations') + '\n');
     return;
   }
 
-  if (!destLocation) {
+  if (!destData) {
     console.log('\n' + error(`Destination location "${destination}" not found`));
     console.log(dim('  Use ') + cyan('display_locations') + dim(' to see available locations') + '\n');
     return;
   }
+
+  // Create Location instances
+  const sourceLocation = new Location(sourceData);
+  const destLocation = new Location(destData);
 
   // Parse delay
   const delay = delayInSeconds ? parseInt(delayInSeconds) : 0;
@@ -916,10 +938,10 @@ async function bookTrip(source, destination, delayInSeconds) {
   let fareResult;
   try {
     fareResult = await computeFareAPI(
-      sourceLocation.latitude,
-      sourceLocation.longitude,
-      destLocation.latitude,
-      destLocation.longitude
+      sourceLocation.data.latitude,
+      sourceLocation.data.longitude,
+      destLocation.data.latitude,
+      destLocation.data.longitude
     );
   } catch (err) {
     console.log('\n' + error(`Failed to compute fare: ${err.message}`) + '\n');
@@ -934,63 +956,47 @@ async function bookTrip(source, destination, delayInSeconds) {
     return;
   }
 
-  // Build the request payload
+  // Build the request payload using Rider class method
   const requestPayload = {
     action: 'create_trip',
     header: {},
     data: {
-      rider: {
-        location: {
-          source: {
-            latitude: sourceLocation.latitude,
-            longitude: sourceLocation.longitude,
-            place_id: sourceLocation.place_id,
-            title: sourceLocation.title,
-            fullAddress: sourceLocation.fullAddress
-          },
-          destination: {
-            latitude: destLocation.latitude,
-            longitude: destLocation.longitude,
-            place_id: destLocation.place_id,
-            title: destLocation.title,
-            fullAddress: destLocation.fullAddress
-          }
-        },
-        lastName: currentRider.lastName,
-        userId: currentRider.userId,
-        firstName: currentRider.firstName
-      }
+      rider: currentRider.createTripPayload(sourceLocation, destLocation)
     }
   };
 
   const width = 62;
 
-  if (delay > 0) {
-    // Store pending booking
-    pendingBooking = {
-      payload: requestPayload,
-      sourceLocation,
-      destLocation,
-      fareResult,
-      sendTime: Date.now() + (delay * 1000)
-    };
+  // Create pending trip using Trip class
+  currentTrip = Trip.createPendingBooking(
+    requestPayload,
+    sourceLocation,
+    destLocation,
+    fareResult,
+    currentRider,
+    Date.now() + (delay * 1000)
+  );
 
+  if (delay > 0) {
     console.log(boxTitle(`${emoji.clock} BOOKING SCHEDULED`, width));
     console.log(boxLine('', width));
     console.log(boxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
-    console.log(boxLine(`  ${cyan(sourceLocation.title)}`, width));
-    console.log(boxLine(`  ${dim(sourceLocation.fullAddress)}`, width));
+    console.log(boxLine(`  ${cyan(sourceLocation.data.title)}`, width));
+    console.log(boxLine(`  ${dim(sourceLocation.data.fullAddress)}`, width));
     console.log(boxLine('', width));
     console.log(boxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
-    console.log(boxLine(`  ${cyan(destLocation.title)}`, width));
-    console.log(boxLine(`  ${dim(destLocation.fullAddress)}`, width));
+    console.log(boxLine(`  ${cyan(destLocation.data.title)}`, width));
+    console.log(boxLine(`  ${dim(destLocation.data.fullAddress)}`, width));
     console.log(boxLine('', width));
     console.log(boxLine(bold(yellow(`${emoji.info} TRIP DETAILS`)), width));
     console.log(boxLine(`  Distance: ${bold(fareResult.distance.toFixed(2))} km`, width));
     console.log(boxLine(`  Estimated Time: ${bold(Math.round(fareResult.time))} minutes`, width));
     console.log(boxLine('', width));
-    console.log(boxLine(bold(yellow(`${emoji.money} ESTIMATED FARE`)), width));
-    console.log(boxLine(`  Total: ${green(bold(`₱${fareResult.fare.toFixed(2)}`))}`, width));
+    console.log(boxLine(bold(yellow(`${emoji.money} FARE BREAKDOWN`)), width));
+    console.log(boxLine(`  Base Fare: ${green(`₱${fareResult.fare.toFixed(2)}`)}`, width));
+    console.log(boxLine(`  Tip: ${dim('No tip added')}`, width));
+    console.log(boxLine(`  ${dim('─'.repeat(40))}`, width));
+    console.log(boxLine(`  Total Amount: ${green(bold(`₱${fareResult.fare.toFixed(2)}`))}`, width));
     console.log(boxLine('', width));
     console.log(boxLine(yellow(`Booking will be sent in ${delay} seconds`), width));
     console.log(boxLine('', width));
@@ -1010,19 +1016,22 @@ async function bookTrip(source, destination, delayInSeconds) {
     console.log(boxTitle(`${emoji.pickup} BOOKING TRIP`, width));
     console.log(boxLine('', width));
     console.log(boxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
-    console.log(boxLine(`  ${cyan(sourceLocation.title)}`, width));
-    console.log(boxLine(`  ${dim(sourceLocation.fullAddress)}`, width));
+    console.log(boxLine(`  ${cyan(sourceLocation.data.title)}`, width));
+    console.log(boxLine(`  ${dim(sourceLocation.data.fullAddress)}`, width));
     console.log(boxLine('', width));
     console.log(boxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
-    console.log(boxLine(`  ${cyan(destLocation.title)}`, width));
-    console.log(boxLine(`  ${dim(destLocation.fullAddress)}`, width));
+    console.log(boxLine(`  ${cyan(destLocation.data.title)}`, width));
+    console.log(boxLine(`  ${dim(destLocation.data.fullAddress)}`, width));
     console.log(boxLine('', width));
     console.log(boxLine(bold(yellow(`${emoji.info} TRIP DETAILS`)), width));
     console.log(boxLine(`  Distance: ${bold(fareResult.distance.toFixed(2))} km`, width));
     console.log(boxLine(`  Estimated Time: ${bold(Math.round(fareResult.time))} minutes`, width));
     console.log(boxLine('', width));
-    console.log(boxLine(bold(yellow(`${emoji.money} ESTIMATED FARE`)), width));
-    console.log(boxLine(`  Total: ${green(bold(`₱${fareResult.fare.toFixed(2)}`))}`, width));
+    console.log(boxLine(bold(yellow(`${emoji.money} FARE BREAKDOWN`)), width));
+    console.log(boxLine(`  Base Fare: ${green(`₱${fareResult.fare.toFixed(2)}`)}`, width));
+    console.log(boxLine(`  Tip: ${dim('No tip added')}`, width));
+    console.log(boxLine(`  ${dim('─'.repeat(40))}`, width));
+    console.log(boxLine(`  Total Amount: ${green(bold(`₱${fareResult.fare.toFixed(2)}`))}`, width));
     console.log(boxLine('', width));
     console.log(boxBottom(width) + '\n');
 
@@ -1046,9 +1055,9 @@ function showStatus() {
 
   // Identity
   if (currentRider) {
-    const riderName = cyan(`${currentRider.firstName} ${currentRider.lastName}`);
+    const riderName = cyan(`${currentRider.data.firstName} ${currentRider.data.lastName}`);
     console.log(doubleBoxLine(`${emoji.rider} Identity       ${riderName}`, width));
-    console.log(doubleBoxLine(`   User ID        ${dim(currentRider.userId)}`, width));
+    console.log(doubleBoxLine(`   User ID        ${dim(currentRider.data.userId)}`, width));
   } else {
     console.log(doubleBoxLine(`${emoji.rider} Identity       ${gray('Not assumed')}`, width));
   }
@@ -1056,9 +1065,9 @@ function showStatus() {
 
   // Location
   if (currentLocation) {
-    console.log(doubleBoxLine(`${emoji.location} Location       ${yellow(currentLocation.title)}`, width));
-    console.log(doubleBoxLine(`   ${dim(currentLocation.fullAddress)}`, width));
-    console.log(doubleBoxLine(`   ${dim(`Coordinates: ${currentLocation.latitude}, ${currentLocation.longitude}`)}`, width));
+    console.log(doubleBoxLine(`${emoji.location} Location       ${yellow(currentLocation.data.title)}`, width));
+    console.log(doubleBoxLine(`   ${dim(currentLocation.data.fullAddress)}`, width));
+    console.log(doubleBoxLine(`   ${dim(`Coordinates: ${currentLocation.data.latitude}, ${currentLocation.data.longitude}`)}`, width));
   } else {
     console.log(doubleBoxLine(`${emoji.location} Location       ${gray('Not set')}`, width));
   }

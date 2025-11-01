@@ -9,6 +9,7 @@
     "client": "node client.js",
     "publisher": "node redis-publisher.js",
     "rider": "node rider-client.js",
+    "riderv2": "node rider-client-v2.js",
     "driver": "node driver-client.js"
   },
   "keywords": [
