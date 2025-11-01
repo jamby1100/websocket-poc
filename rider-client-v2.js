@@ -12,6 +12,7 @@ const Trip = require('./app/domains/trip');
 const Location = require('./app/domains/location');
 
 const showHelp = require('./app/helpers/showHelp');
+const displayActiveTrip = require('./app/helpers/displayActiveTrip');
 
 // Server configuration
 const SERVER_HOST = process.env.WEBSOCKET_SERVER || 'localhost';
@@ -436,8 +437,6 @@ async function bookTrip(source, destination, delayInSeconds) {
     }
   };
 
-  const width = 62;
-
   // Create pending trip using Trip class
   currentTrip = Trip.createPendingBooking(
     requestPayload,
@@ -450,30 +449,58 @@ async function bookTrip(source, destination, delayInSeconds) {
 
 
   // Send immediately with fare display
-  console.log(boxTitle(`${emoji.pickup} BOOKING TRIP`, width));
-  console.log(boxLine('', width));
-  console.log(boxLine(bold(yellow(`${emoji.pickup} PICKUP`)), width));
-  console.log(boxLine(`  ${cyan(sourceLocation.data.title)}`, width));
-  console.log(boxLine(`  ${dim(sourceLocation.data.fullAddress)}`, width));
-  console.log(boxLine('', width));
-  console.log(boxLine(bold(yellow(`${emoji.destination} DESTINATION`)), width));
-  console.log(boxLine(`  ${cyan(destLocation.data.title)}`, width));
-  console.log(boxLine(`  ${dim(destLocation.data.fullAddress)}`, width));
-  console.log(boxLine('', width));
-  console.log(boxLine(bold(yellow(`${emoji.info} TRIP DETAILS`)), width));
-  console.log(boxLine(`  Distance: ${bold(fareResult.distance.toFixed(2))} km`, width));
-  console.log(boxLine(`  Estimated Time: ${bold(Math.round(fareResult.time))} minutes`, width));
-  console.log(boxLine('', width));
-  console.log(boxLine(bold(yellow(`${emoji.money} FARE BREAKDOWN`)), width));
-  console.log(boxLine(`  Base Fare: ${green(`₱${fareResult.baseFare.toFixed(2)}`)}`, width));
-  console.log(boxLine(`  Tip: ${dim('No tip added')}`, width));
-  console.log(boxLine(`  ${dim('─'.repeat(40))}`, width));
-  console.log(boxLine(`  Total Amount: ${green(bold(`₱${fareResult.baseFare.toFixed(2)}`))}`, width));
-  console.log(boxLine('', width));
-  console.log(boxBottom(width) + '\n');
+  displayActiveTrip(currentTrip);
 
   sendTripRequest(requestPayload);
 }
+
+async function addTip(tipAmount) {
+  const width = 62;
+
+  // Check if there's a current trip
+  if (!currentTrip || !currentTrip.isActive()) {
+    console.log('\n' + warning('No active trip to add tip to') + '\n');
+    console.log(dim('  You can add a tip:') + '\n');
+    console.log(dim('  1. During the delay period after booking with ') + cyan('book_trip "from" "to" delay'));
+    console.log(dim('  2. After the trip has been sent and accepted by a driver') + '\n');
+    return;
+  }
+
+  // Validate and add tip using Trip class method
+  currentTrip.addTip(tipAmount);
+  const tip = currentTrip.data.tip;
+
+  // Add tip to active trip (after trip is sent)
+  if (currentTrip.data.tripId) {
+    console.log('\n' + info('Adding tip to your trip...') + '\n');
+      // Call stubbed API to add tip
+      const result = await addTipAPI(currentTrip.data.tripId, tip);
+
+      console.log(boxTitle(`${emoji.money} TIP ADDED`, width));
+      console.log(boxLine('', width));
+      console.log(boxLine(green(`Trip ID: ${currentTrip.data.tripId}`), width));
+      console.log(boxLine(green(`Tip amount: ₱${tip.toFixed(2)}`), width));
+      console.log(boxLine('', width));
+      console.log(boxLine(success(result.message), width));
+      console.log(boxLine('', width));
+      console.log(boxBottom(width) + '\n');
+  }
+}
+
+function displayCurrentTrip() {
+  const width = 62;
+
+  // Check if there's a current trip
+  if (!currentTrip) {
+    console.log('\n' + warning('No active trip to display') + '\n');
+    console.log(dim('  Book a trip using: ') + cyan('book_trip "from" "to" [delay]') + '\n');
+    return;
+  }
+
+  displayActiveTrip(currentTrip);
+}
+
+
 
 rl.on('line', (line) => {
     const input = line.trim();

@@ -86,14 +86,7 @@ class Trip {
   }
 
   getBaseFare() {
-    console.log("And the data fare is:")
-    console.log(this.data.fare)
-
-    if (this.data.fare && this.data.fare.total !== undefined) {
-      return this.data.fare.total;
-    }
-
-    return 0;
+    return this.data.fare.baseFare
   }
 
   getSourceLocation() {
