@@ -5,6 +5,9 @@ const { createClient } = require('redis');
 const { createAdapter } = require('@socket.io/redis-streams-adapter');
 const readline = require('readline');
 const axios = require('axios');
+const { success, error, warning, info, bold, dim, green, red, yellow, cyan, gray,
+  doubleBoxTitle, doubleBoxLine, doubleBoxSeparator, doubleBoxBottom,
+  boxTitle, boxLine, boxBottom, emoji } = require('./colors');
 
 // Create Express app
 const app = express();
@@ -242,13 +245,24 @@ io.on('connection', (socket) => {
 
         // Store mapping of tripId to rider socketId
         tripToRider.set(tripData.sk, socket.id);
-
+        const driverSocketId = null;
+        
+        const driverFullName = ``;
         // Extract driver info from API response
-        const driverFirstName = tripData.driver.firstName;
-        const driverLastName = tripData.driver.lastName;
-        const driverFullName = `${driverFirstName} ${driverLastName}`;
+        if (tripData.driver) {
+          const driverFirstName = tripData.driver.firstName;
+          const driverLastName = tripData.driver.lastName;
+          const driverFullName = `${driverFirstName} ${driverLastName}`;
+          console.log(`[DRIVER ASSIGNMENT] Driver assigned: ${driverFullName}`);
 
-        console.log(`[DRIVER ASSIGNMENT] Driver assigned: ${driverFullName}`);
+          // Look up driver socket by name
+          const driverSocketId = onlineDrivers.get(driverFullName);
+        } else {
+          console.log("No Driver assigned")
+        }
+
+
+        
 
         // Send trip details back to rider (with fare, without driver details yet)
         socket.emit('trip-created', {
@@ -259,10 +273,9 @@ io.on('connection', (socket) => {
           driver: tripData.driver
         });
 
-        // Look up driver socket by name
-        const driverSocketId = onlineDrivers.get(driverFullName);
 
-        if (driverSocketId) {
+
+        if (driverSocketId && tripData.driver) {
           console.log(`[DRIVER NOTIFICATION] Notifying driver ${driverFullName} (${driverSocketId})`);
 
           // Send trip request to the assigned driver
@@ -273,7 +286,7 @@ io.on('connection', (socket) => {
             driver: tripData.driver
           });
         } else {
-          console.log(`[ERROR] Driver ${driverFullName} is not online or not found`);
+          console.log(`[ERROR] Driver ${driverFullName ? driverFullName : "[Driver]"} is not online or not found`);
           console.log(`[ERROR] Available drivers: ${Array.from(onlineDrivers.keys()).join(', ')}`);
         }
       } else {
@@ -283,6 +296,9 @@ io.on('connection', (socket) => {
 
     } catch (error) {
       console.log(`\n[ERROR] API call failed: ${error.message}`);
+      console.log(dim('Stack trace:'));
+      console.log(dim(error.stack) + '\n');
+
       if (error.response) {
         console.log(`[ERROR] Status: ${error.response.status}`);
         console.log(`[ERROR] Data:`, error.response.data);

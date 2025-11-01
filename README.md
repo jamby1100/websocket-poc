@@ -25,6 +25,7 @@ sendroom user-room-12345 "Here's a message from the server"
 ```sh
 # Connect to localhost (default)
 npm run client
+npm run rider
 
 # Connect to a custom server
 WEBSOCKET_SERVER=54.169.75.241 npm run client
