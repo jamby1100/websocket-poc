@@ -14,7 +14,6 @@ class Trip {
       tip: data.tip || 0,
       createdAt: data.createdAt || new Date().toISOString(),
       updatedAt: data.updatedAt || new Date().toISOString(),
-      // For pending bookings
       sourceLocation: data.sourceLocation || null,
       destLocation: data.destLocation || null,
       payload: data.payload || null,
@@ -31,20 +30,8 @@ class Trip {
     return this.data.status === 'looking_for_driver';
   }
 
-  isAccepted() {
-    return this.data.status === 'accepted';
-  }
-
-  isInProgress() {
-    return this.data.status === 'in_progress';
-  }
-
   isCompleted() {
     return this.data.status === 'completed';
-  }
-
-  isCancelled() {
-    return this.data.status === 'cancelled';
   }
 
   isActive() {
@@ -89,35 +76,6 @@ class Trip {
     return this.data.fare.baseFare
   }
 
-  getSourceLocation() {
-    let locationData = null;
-    if (this.data.sourceLocation) {
-      locationData = this.data.sourceLocation;
-    } else if (this.data.rider && this.data.rider.location && this.data.rider.location.source) {
-      locationData = this.data.rider.location.source;
-    }
-    return locationData ? new Location(locationData) : null;
-  }
-
-  getDestinationLocation() {
-    let locationData = null;
-    if (this.data.destLocation) {
-      locationData = this.data.destLocation;
-    } else if (this.data.rider && this.data.rider.location && this.data.rider.location.destination) {
-      locationData = this.data.rider.location.destination;
-    }
-    return locationData ? new Location(locationData) : null;
-  }
-
-  getRemainingSeconds() {
-    if (!this.data.sendTime) return 0;
-    return Math.ceil((this.data.sendTime - Date.now()) / 1000);
-  }
-
-  isOverdue() {
-    return this.getRemainingSeconds() < 0;
-  }
-
   update(updates) {
     this.data = {
       ...this.data,
@@ -125,19 +83,7 @@ class Trip {
       updatedAt: new Date().toISOString()
     };
   }
-
-  // Static factory methods
-  static fromTripCreatedEvent(eventData) {
-    return new Trip({
-      tripId: eventData.tripId,
-      status: 'looking_for_driver',
-      rider: eventData.rider,
-      driver: eventData.driver || null,
-      fare: eventData.fare,
-      tip: eventData.tip || 0
-    });
-  }
-
+  
   static createPendingBooking(payload, sourceLocation, destLocation, fare, currentRider, sendTime) {
     // Support both Location instances and plain objects
     const sourceData = sourceLocation.data || sourceLocation;
